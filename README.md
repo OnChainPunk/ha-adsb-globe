@@ -1,82 +1,47 @@
 # ADS-B Globe for Home Assistant
 
-Live tar1090 / ADS-B Exchange-style aircraft map as a **Lovelace card**, plus sensors you can automate on.
+Live tar1090 / ADS-B Exchange-style aircraft map as a Lovelace card.
 
-Built for **Home Assistant OS** (including a Proxmox KVM VM). No extra containers required.
+## Install so it appears under custom cards
 
-- Map loads **whatever the current zoom/view covers** (up to 250 NM, the public API limit)
-- Refreshes every **1 second** — same interval as tar1090 and the ADS-B Exchange globe
-- Home pin, range rings, amber alert ring
-- Alerts for military, helicopters, Chinooks, Apaches, Black Hawks, police, fighters, emergency squawks
-- Selected-aircraft trail only
-- Dark / light / streets / OSM / satellite / terrain maps
-- Uses `zone.home` from Home Assistant unless you override coordinates
+HACS only auto-registers **Dashboard** plugins in the Add card picker. An Integration install will not.
 
-Public traffic: [adsb.lol](https://adsb.lol) / [adsb.fi](https://opendata.adsb.fi). Optional local dump1090 / readsb / tar1090 feeder.
+1. **HACS → ⋮ → Custom repositories**
+2. Repository: `https://github.com/OnChainPunk/ha-adsb-globe`
+3. Type: **Dashboard** (not Integration)
+4. **Add** → find **ADS-B Globe** → **Download**
+5. Restart Home Assistant
+6. Hard-refresh the browser (**Ctrl+Shift+R**)
+7. Edit dashboard → **Add card** → **ADS-B Globe** should be in the list
+
+If you already added this repo as an Integration, remove that custom repository (or leave it for sensors) and add the **same URL again as Dashboard**. The Dashboard type is what puts the card in the picker and loads the JavaScript.
 
 ---
 
-## “Custom element doesn’t exist: adsb-globe-card”
+## Still seeing “Custom element doesn’t exist”?
 
-The YAML is fine. Home Assistant never loaded the card JavaScript. Do **all three**:
-
-### 1. Add the integration (required)
-
-**Settings → Devices & services → Add integration → ADS-B Globe**
-
-HACS only copies files. Until this step, the card is not registered.
-
-### 2. Add the Lovelace resource
-
-**Settings → Dashboards → ⋮ (top right) → Resources → Add resource**
+The JS never loaded. After a Dashboard install, HACS should have created this resource automatically:
 
 | Field | Value |
 | --- | --- |
-| URL | `/local/adsb_globe/adsb-globe-card.js?v=1.0.1` |
-| Type | **JavaScript module** |
+| URL | `/hacsfiles/ha-adsb-globe/adsb-globe-card.js` |
+| Type | JavaScript module |
 
-If that 404s, use `/adsb_globe/adsb-globe-card.js?v=1.0.1` instead.
-
-### 3. Restart, then hard-refresh
-
-1. **Developer tools → Restart**
-2. In the browser: **Ctrl+Shift+R** (Cmd+Shift+R on Mac)
-
-Then add the card again. The red error should be gone.
-
-**HACS Dashboard fallback** (if the resource still 404s): HACS → ⋮ → Custom repositories → same GitHub URL → type **Dashboard** → Download. That installs `/hacsfiles/ha-adsb-globe/adsb-globe-card.js` and registers it automatically.
+Check **Settings → Dashboards → Resources**. If it’s missing, add it, restart, hard-refresh.
 
 ---
 
-## Install on Proxmox Home Assistant OS
+## Optional: sensors / alerts as HA entities
 
-You already have HA running in a Proxmox VM — install this **inside that VM**, not as another LXC.
+Same repo, HACS type **Integration**, then **Settings → Devices & services → Add integration → ADS-B Globe**.
 
-### A. HACS (recommended)
+That gives `binary_sensor.ads_b_chinook_in_zone`, military, police, emergency squawk, etc.
 
-1. In Home Assistant: **HACS → Integrations → ⋮ (three dots) → Custom repositories**
-2. Repository: `https://github.com/OnChainPunk/ha-adsb-globe`
-3. Type: **Integration**
-4. **Add** → find **ADS-B Globe** → **Download**
-5. **Developer tools → Restart** Home Assistant
-6. **Settings → Devices & services → Add integration → ADS-B Globe**
-7. Leave *Local feeder URL* blank unless you run a radio (see below)
-8. Add the Lovelace resource (table above), restart, hard-refresh
-
-### B. Manual (Samba / SSH / File editor)
-
-1. Copy the folder `custom_components/adsb_globe` to  
-   `/config/custom_components/adsb_globe`  
-   on the HA VM.
-2. Restart Home Assistant
-3. **Settings → Devices & services → Add integration → ADS-B Globe**
-4. Add the Lovelace resource as above
+The card itself does **not** need the integration. Dashboard install is enough to see planes.
 
 ---
 
-## Add the card
-
-Edit dashboard → **Add card → Manual**:
+## Card YAML (or just pick it in the UI)
 
 ```yaml
 type: custom:adsb-globe-card
@@ -89,82 +54,18 @@ show_ground: false
 alert:
   enabled: true
   radius_nm: 15
-  on:
-    - military
-    - helicopter
-    - chinook
-    - apache
-    - blackhawk
-    - police
-    - fighter
-    - emergency
+  on: [military, helicopter, chinook, apache, blackhawk, police, fighter, emergency]
 ```
 
-Optional overrides (otherwise `zone.home` is used):
-
-```yaml
-latitude: 51.4700
-longitude: -0.4543
-home_name: Heathrow
-```
+Home is `zone.home` unless you set `latitude` / `longitude`.
 
 ---
 
-## Local ADS-B radio (optional)
+## Local ADS-B radio
 
-If you already run **readsb / tar1090 / ultrafeeder** as another Proxmox LXC or VM:
-
-1. Note its IP, e.g. `192.168.1.20`
-2. Confirm you can open `http://192.168.1.20/data/aircraft.json` (or `/tar1090/data/aircraft.json`)
-3. In the integration options, set  
-   **Local feeder URL** = `http://192.168.1.20/tar1090/data/aircraft.json`
-4. HA VM must be able to reach that IP (same LAN / vmbr)
+If tar1090/readsb runs in another Proxmox LXC, set the integration feeder URL to  
+`http://<feeder-ip>/tar1090/data/aircraft.json`
 
 ---
 
-## Entities for automations
-
-| Entity | When it turns on |
-| --- | --- |
-| `binary_sensor.ads_b_military_in_zone` | Military flagged aircraft inside the alert radius |
-| `binary_sensor.ads_b_helicopter_in_zone` | Any helicopter |
-| `binary_sensor.ads_b_chinook_in_zone` | CH-47 |
-| `binary_sensor.ads_b_apache_in_zone` | AH-64 |
-| `binary_sensor.ads_b_black_hawk_in_zone` | UH-60 |
-| `binary_sensor.ads_b_police_aircraft_in_zone` | Police callsigns |
-| `binary_sensor.ads_b_fighter_in_zone` | F-16 / F-35 / Typhoon / … |
-| `binary_sensor.ads_b_emergency_squawk_in_zone` | 7500 / 7600 / 7700 |
-| `sensor.ads_b_aircraft_in_range` | Count |
-| `sensor.ads_b_nearest` | Distance NM + callsign attributes |
-
-Example:
-
-```yaml
-automation:
-  - alias: Chinook nearby
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.ads_b_chinook_in_zone
-        to: "on"
-    action:
-      - service: notify.mobile_app_your_phone
-        data:
-          title: Chinook
-          message: "{{ state_attr('binary_sensor.ads_b_chinook_in_zone', 'callsigns') }}"
-```
-
----
-
-## Toolbar
-
-Labels · selected trail · ground traffic · military-only · pause · map styles.
-
-Click an aircraft for the info panel. Trails are drawn only for the selected plane.
-
----
-
-## Notes
-
-- Not affiliated with ADS-B Exchange. Silhouettes are simplified tar1090-style icons.
-- Public API coverage depends on volunteer feeders; a local radio is better for your own sky.
-- Polling: **card 1 s** (view), **sensors 10 s** (entities).
+Map loads the current view, polls every 1 second (same as tar1090). Not affiliated with ADS-B Exchange.

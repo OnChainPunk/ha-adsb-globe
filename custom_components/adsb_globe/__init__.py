@@ -17,7 +17,7 @@ from .view import AdsbFeedView
 
 _LOGGER = logging.getLogger(__name__)
 _FRONTEND_REGISTERED = False
-CARD_VERSION = "1.0.1"
+CARD_VERSION = "1.0.2"
 RESOURCE_URL = f"/local/adsb_globe/adsb-globe-card.js?v={CARD_VERSION}"
 
 CONFIG_SCHEMA = vol.Schema({DOMAIN: vol.Schema({}, extra=vol.ALLOW_EXTRA)}, extra=vol.ALLOW_EXTRA)
