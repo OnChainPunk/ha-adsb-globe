@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ADS-B Globe",
+        "description": "Leave the feeder blank to use the public adsb.lol / adsb.fi network. Point it at a local tar1090 / readsb if you run one (Proxmox LXC or another VM), e.g. http://192.168.1.20/tar1090/data/aircraft.json",
+        "data": {
+          "name": "Name",
+          "feeder_url": "Local feeder URL (optional)",
+          "alert_radius_nm": "Alert radius (nautical miles)"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "ADS-B Globe is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "ADS-B Globe options",
+        "data": {
+          "feeder_url": "Local feeder URL (optional)",
+          "alert_radius_nm": "Alert radius (nautical miles)"
+        }
+      }
+    }
+  }
+}
