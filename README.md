@@ -16,6 +16,38 @@ Public traffic: [adsb.lol](https://adsb.lol) / [adsb.fi](https://opendata.adsb.f
 
 ---
 
+## “Custom element doesn’t exist: adsb-globe-card”
+
+The YAML is fine. Home Assistant never loaded the card JavaScript. Do **all three**:
+
+### 1. Add the integration (required)
+
+**Settings → Devices & services → Add integration → ADS-B Globe**
+
+HACS only copies files. Until this step, the card is not registered.
+
+### 2. Add the Lovelace resource
+
+**Settings → Dashboards → ⋮ (top right) → Resources → Add resource**
+
+| Field | Value |
+| --- | --- |
+| URL | `/local/adsb_globe/adsb-globe-card.js?v=1.0.1` |
+| Type | **JavaScript module** |
+
+If that 404s, use `/adsb_globe/adsb-globe-card.js?v=1.0.1` instead.
+
+### 3. Restart, then hard-refresh
+
+1. **Developer tools → Restart**
+2. In the browser: **Ctrl+Shift+R** (Cmd+Shift+R on Mac)
+
+Then add the card again. The red error should be gone.
+
+**HACS Dashboard fallback** (if the resource still 404s): HACS → ⋮ → Custom repositories → same GitHub URL → type **Dashboard** → Download. That installs `/hacsfiles/ha-adsb-globe/adsb-globe-card.js` and registers it automatically.
+
+---
+
 ## Install on Proxmox Home Assistant OS
 
 You already have HA running in a Proxmox VM — install this **inside that VM**, not as another LXC.
@@ -29,15 +61,16 @@ You already have HA running in a Proxmox VM — install this **inside that VM**,
 5. **Developer tools → Restart** Home Assistant
 6. **Settings → Devices & services → Add integration → ADS-B Globe**
 7. Leave *Local feeder URL* blank unless you run a radio (see below)
-8. Restart once more so the Lovelace card resource is registered (or hard-refresh the browser)
+8. Add the Lovelace resource (table above), restart, hard-refresh
 
 ### B. Manual (Samba / SSH / File editor)
 
 1. Copy the folder `custom_components/adsb_globe` to  
    `/config/custom_components/adsb_globe`  
-   on the HA VM (full path looks like `/usr/share/hassio/homeassistant/custom_components/adsb_globe` on HAOS).
+   on the HA VM.
 2. Restart Home Assistant
 3. **Settings → Devices & services → Add integration → ADS-B Globe**
+4. Add the Lovelace resource as above
 
 ---
 
@@ -74,13 +107,6 @@ latitude: 51.4700
 longitude: -0.4543
 home_name: Heathrow
 ```
-
-If the card is missing after install: **Settings → Dashboards → Resources → Add**
-
-| Field | Value |
-| --- | --- |
-| URL | `/adsb_globe/adsb-globe-card.js` |
-| Type | JavaScript module |
 
 ---
 
