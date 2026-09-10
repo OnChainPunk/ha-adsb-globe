@@ -40,10 +40,12 @@ class AdsbInAreaSensor(CoordinatorEntity[AdsbCoordinator], SensorEntity):
     @property
     def extra_state_attributes(self):
         data = self.coordinator.data or {}
+        opts = {**self.coordinator.entry.data, **self.coordinator.entry.options}
         return {
             "latitude": data.get("lat"),
             "longitude": data.get("lon"),
             "radius_nm": data.get("radius"),
+            "notify": opts.get("notify", True),
             "source": data.get("source"),
             "aircraft": data.get("ac") or [],
         }

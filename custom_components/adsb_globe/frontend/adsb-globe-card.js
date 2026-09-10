@@ -1,15 +1,34 @@
-const CARD_VERSION = "1.1.0";
-const POLL_MS = 5000;
+const CARD_VERSION = "1.1.1";
+const POLL_MS = 2000;
 const MAX_DIST = 250;
 const MAX_TRAIL = 64;
 
 const MAPS = {
-  dark: { url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", attr: "© OSM © CARTO", sub: "abcd" },
-  light: { url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", attr: "© OSM © CARTO", sub: "abcd" },
-  streets: { url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", attr: "© OSM © CARTO", sub: "abcd" },
-  osm: { url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", attr: "© OpenStreetMap", sub: "abc" },
-  sat: { url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", attr: "Tiles © Esri" },
-  terrain: { url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", attr: "© OSM © OpenTopoMap", sub: "abc" },
+  dark: {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    attr: "Tiles © Esri",
+  },
+  light: {
+    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attr: "© OpenStreetMap",
+  },
+  streets: {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+    attr: "Tiles © Esri",
+  },
+  osm: {
+    url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attr: "© OpenStreetMap",
+  },
+  sat: {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    attr: "Tiles © Esri",
+  },
+  terrain: {
+    url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+    attr: "© OSM © OpenTopoMap",
+    sub: "abc",
+  },
 };
 
 const SHAPES = {
@@ -97,6 +116,32 @@ const LEAFLET_CSS_CDN = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
 const LEAFLET_JS_CDN = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
 let leafletLoader = null;
 
+function injectLeafletCss() {
+  if (document.getElementById("adsb-leaflet-critical")) return;
+  const s = document.createElement("style");
+  s.id = "adsb-leaflet-critical";
+  s.textContent = `
+    .leaflet-pane,.leaflet-tile,.leaflet-marker-icon,.leaflet-marker-shadow,.leaflet-tile-container,
+    .leaflet-pane>svg,.leaflet-pane>canvas,.leaflet-zoom-box,.leaflet-image-layer,.leaflet-layer{position:absolute;left:0;top:0}
+    .leaflet-container{overflow:hidden;width:100%;height:100%;background:#111}
+    .leaflet-tile{visibility:hidden}
+    .leaflet-tile-loaded{visibility:inherit}
+    .leaflet-marker-icon,.leaflet-marker-shadow{display:block}
+    .leaflet-div-icon{background:transparent;border:0}
+    .leaflet-tile-pane{z-index:200}.leaflet-overlay-pane{z-index:400}
+    .leaflet-shadow-pane{z-index:500}.leaflet-marker-pane{z-index:600}
+    .leaflet-tooltip-pane{z-index:650}.leaflet-popup-pane{z-index:700}
+    .leaflet-control{position:relative;z-index:800;pointer-events:auto}
+    .leaflet-top,.leaflet-bottom{position:absolute;z-index:1000;pointer-events:none}
+    .leaflet-top{top:0}.leaflet-bottom{bottom:0}.leaflet-left{left:0}.leaflet-right{right:0}
+    .leaflet-top .leaflet-control{margin-top:10px}.leaflet-bottom .leaflet-control{margin-bottom:10px}
+    .leaflet-left .leaflet-control{margin-left:10px}.leaflet-right .leaflet-control{margin-right:10px}
+    .leaflet-bar{box-shadow:0 1px 5px rgba(0,0,0,.4);border-radius:4px}
+    .leaflet-bar a{background:#fff;border-bottom:1px solid #ccc;width:26px;height:26px;line-height:26px;display:block;text-align:center;text-decoration:none;color:#000}
+  `;
+  document.head.appendChild(s);
+}
+
 function loadCss(href) {
   if (document.querySelector(`link[href="${href}"]`)) return;
   const link = document.createElement("link");
@@ -123,16 +168,20 @@ function loadScript(src) {
 }
 
 function ensureLeaflet() {
-  if (window.L) return Promise.resolve(window.L);
+  if (window.L) {
+    injectLeafletCss();
+    return Promise.resolve(window.L);
+  }
   if (leafletLoader) return leafletLoader;
   leafletLoader = (async () => {
+    injectLeafletCss();
+    loadCss(LEAFLET_CSS_CDN);
     loadCss(LEAFLET_CSS_LOCAL);
     try {
-      await loadScript(LEAFLET_JS_LOCAL);
+      await loadScript(LEAFLET_JS_CDN);
       if (window.L) return window.L;
-    } catch (err) { /* fall through to CDN, same as Flightradar24 */ }
-    loadCss(LEAFLET_CSS_CDN);
-    await loadScript(LEAFLET_JS_CDN);
+    } catch (err) { /* local copy */ }
+    await loadScript(LEAFLET_JS_LOCAL);
     if (!window.L) throw new Error("Leaflet failed to load");
     return window.L;
   })();
@@ -146,7 +195,7 @@ class AdsbGlobeCard extends HTMLElement {
     return {
       entity,
       title: "Airspace",
-      map: "dark",
+      map: "osm",
       show_labels: true,
       show_trails: true,
       show_range_rings: true,
@@ -168,7 +217,7 @@ class AdsbGlobeCard extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = { map: "dark", show_labels: true, show_trails: true, show_range_rings: true, show_ground: false, ...config };
+    this._config = { map: "osm", show_labels: true, show_trails: true, show_range_rings: true, show_ground: false, ...config };
     this._config.alert = { enabled: true, radius_nm: 15, on: ["military", "helicopter", "chinook", "apache", "police", "fighter", "emergency"], ...(config.alert || {}) };
     if (!this.querySelector("ha-card")) {
       const card = document.createElement("ha-card");
@@ -224,7 +273,7 @@ class AdsbGlobeCard extends HTMLElement {
     this._tracks = this._config.show_trails !== false;
     this._ground = !!this._config.show_ground;
     this._milOnly = false;
-    this._mapId = this._config.map || "dark";
+    this._mapId = this._config.map || "osm";
     this._alertInside = new Set();
     this._alertPrimed = false;
 
@@ -238,7 +287,14 @@ class AdsbGlobeCard extends HTMLElement {
         .adsb-dot { width:8px; height:8px; border-radius:50%; background:#4caf50; box-shadow:0 0 8px #4caf50; }
         .adsb-dot.off { background:#9e9e9e; box-shadow:none; }
         .adsb-meta { margin-left:auto; font-size:12px; font-weight:400; color: var(--secondary-text-color); }
-        .adsb-map { height: 460px; width:100%; background:#111; }
+        .adsb-map { height: 520px; width:100%; background:#111; }
+        .adsb-gear { margin-left:8px; border:1px solid var(--divider-color); background:transparent; color:var(--primary-text-color); border-radius:4px; width:28px; height:28px; cursor:pointer; }
+        .adsb-settings { display:none; position:absolute; right:10px; top:10px; z-index:800; width:250px; background: color-mix(in srgb, var(--card-background-color) 94%, transparent); border:1px solid var(--divider-color); border-radius:8px; padding:12px; font-size:13px; }
+        .adsb-settings.open { display:block; }
+        .adsb-settings h3 { margin:0 0 8px; font-size:14px; }
+        .adsb-settings label { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 0; }
+        .adsb-settings input[type=range] { width:120px; }
+        .adsb-settings .hint { color:var(--secondary-text-color); font-size:11px; }
         .adsb-tools { display:flex; flex-wrap:wrap; gap:4px; padding:6px 10px 10px; }
         .adsb-tools button { border:1px solid var(--divider-color); background: var(--secondary-background-color, var(--card-background-color)); color: var(--primary-text-color); border-radius:4px; padding:4px 8px; font-size:11px; cursor:pointer; }
         .adsb-tools button.on { border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 18%, transparent); }
@@ -254,9 +310,23 @@ class AdsbGlobeCard extends HTMLElement {
         <span class="adsb-dot"></span>
         <span class="adsb-title">${this._config.title || "ADS-B Globe"}</span>
         <span class="adsb-meta">connecting</span>
+        <button type="button" class="adsb-gear" title="Settings">⚙</button>
       </div>
       <div style="position:relative">
         <div class="adsb-map"></div>
+        <div class="adsb-settings">
+          <h3>Settings</h3>
+          <label>Alert range <span class="adsb-range-val">15</span> NM
+            <input type="range" class="adsb-range" min="5" max="80" step="1" value="15">
+          </label>
+          <label>Notifications
+            <input type="checkbox" class="adsb-notify" checked>
+          </label>
+          <label>Range rings
+            <input type="checkbox" class="adsb-rings" checked>
+          </label>
+          <div class="hint">Range and notifications save to the integration.</div>
+        </div>
       </div>
       <div class="adsb-tools"></div>
     `;
@@ -265,6 +335,8 @@ class AdsbGlobeCard extends HTMLElement {
     this._dot = root.querySelector(".adsb-dot");
     this._mapEl = root.querySelector(".adsb-map");
     this._tools = root.querySelector(".adsb-tools");
+    this._settingsEl = root.querySelector(".adsb-settings");
+    this._bindSettings(root);
     this._renderTools();
 
     try {
@@ -283,6 +355,44 @@ class AdsbGlobeCard extends HTMLElement {
     setTimeout(() => this._map.invalidateSize(), 250);
     this._fetch();
     this._timer = setInterval(() => this._fetch(), POLL_MS);
+  }
+
+  _bindSettings(root) {
+    const gear = root.querySelector(".adsb-gear");
+    const panel = this._settingsEl;
+    const range = panel.querySelector(".adsb-range");
+    const rangeVal = panel.querySelector(".adsb-range-val");
+    const notify = panel.querySelector(".adsb-notify");
+    const rings = panel.querySelector(".adsb-rings");
+    const apply = () => {
+      range.value = String(this._radiusNm());
+      rangeVal.textContent = String(this._radiusNm());
+      notify.checked = this._notifyOn();
+      rings.checked = this._config.show_range_rings !== false;
+    };
+    apply();
+    gear.addEventListener("click", () => {
+      apply();
+      panel.classList.toggle("open");
+    });
+    range.addEventListener("input", () => {
+      rangeVal.textContent = range.value;
+    });
+    const save = () => {
+      const radius = Number(range.value);
+      this._config.alert = { ...(this._config.alert || {}), radius_nm: radius, enabled: notify.checked };
+      this._config.show_range_rings = rings.checked;
+      this._drawRings();
+      if (this._hass && this._hass.callService) {
+        this._hass.callService("adsb_globe", "set_options", { radius_nm: radius, notify: notify.checked });
+      }
+    };
+    range.addEventListener("change", save);
+    notify.addEventListener("change", save);
+    rings.addEventListener("change", () => {
+      this._config.show_range_rings = rings.checked;
+      this._drawRings();
+    });
   }
 
   _renderTools() {
@@ -315,6 +425,7 @@ class AdsbGlobeCard extends HTMLElement {
   }
 
   _drawRings() {
+    if (!this._rings || !window.L) return;
     const L = window.L;
     this._rings.clearLayers();
     const home = this._home();
@@ -327,10 +438,9 @@ class AdsbGlobeCard extends HTMLElement {
         L.circle([home.lat, home.lon], { radius: nm * 1852, color: "#03a9f4", weight: 1, opacity: 0.35, fill: false, interactive: false }).addTo(this._rings);
       });
     }
-    const al = this._config.alert;
-    if (al && al.enabled !== false) {
+    if (this._notifyOn() || true) {
       L.circle([home.lat, home.lon], {
-        radius: (al.radius_nm || 15) * 1852,
+        radius: this._radiusNm() * 1852,
         color: "#ffa726",
         weight: 2,
         opacity: 0.85,
@@ -374,13 +484,26 @@ class AdsbGlobeCard extends HTMLElement {
     return null;
   }
 
+  _entityState() {
+    const id = this._config.entity;
+    return (id && this._hass && this._hass.states[id]) || null;
+  }
+
+  _radiusNm() {
+    const st = this._entityState();
+    if (st && st.attributes.radius_nm) return Number(st.attributes.radius_nm);
+    return (this._config.alert && this._config.alert.radius_nm) || 15;
+  }
+
+  _notifyOn() {
+    const st = this._entityState();
+    if (st && st.attributes.notify != null) return !!st.attributes.notify;
+    const al = this._config.alert;
+    return !al || al.enabled !== false;
+  }
+
   async _fetch() {
     if (this._gone || this._paused || this._busy || !this._map) return;
-    const st = this._config.entity && this._hass && this._hass.states[this._config.entity];
-    if (st && Array.isArray(st.attributes.aircraft)) {
-      this._paint({ ac: st.attributes.aircraft, source: "ha" });
-      return;
-    }
     this._busy = true;
     const c = this._map.getCenter();
     const dist = this._viewDist();
@@ -394,6 +517,12 @@ class AdsbGlobeCard extends HTMLElement {
     }
     if (!data || !Array.isArray(data.ac || data.aircraft)) {
       data = await this._fetchPublic(c.lat, c.lng, dist);
+    }
+    if ((!data || !Array.isArray(data.ac || data.aircraft))) {
+      const st = this._entityState();
+      if (st && Array.isArray(st.attributes.aircraft)) {
+        data = { ac: st.attributes.aircraft, source: "ha" };
+      }
     }
     if (data && (data.ac || data.aircraft)) {
       this._paint(this._normalizeFeed(data));
@@ -416,8 +545,14 @@ class AdsbGlobeCard extends HTMLElement {
     this._runAlerts(list);
 
     const keep = new Set();
-    const bounds = this._map.getBounds().pad(0.08);
-    const vis = list.filter((a) => a.hex === this._selected || bounds.contains([a.lat, a.lon]));
+    const bounds = this._map.getBounds().pad(0.2);
+    let vis = list.filter((a) => {
+      const lat = Number(a.lat), lon = Number(a.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+      a.lat = lat; a.lon = lon;
+      return a.hex === this._selected || bounds.contains([lat, lon]);
+    });
+    if (!vis.length && list.length) vis = list.filter((a) => Number.isFinite(Number(a.lat)));
     vis.forEach((ac) => {
       keep.add(ac.hex);
       const shape = TYPE_SHAPE[(ac.t || "").toUpperCase()] || (ac.category === "A7" ? "heli" : "unknown");
@@ -425,7 +560,7 @@ class AdsbGlobeCard extends HTMLElement {
       const color = ["7500", "7600", "7700"].includes(ac.squawk) ? "#ef5350" : altColor(ac.alt);
       const sel = ac.hex === this._selected;
       const rot = ac.track || 0;
-      const size = sel ? 34 : 26;
+      const size = sel ? 40 : 32;
       const label = this._labels || sel
         ? `<div class="adsb-label">${callsign(ac)} ${ac.alt === "ground" ? "gnd" : (ac.alt != null ? Math.round(ac.alt) : "")}</div>`
         : "";

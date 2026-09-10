@@ -57,7 +57,7 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if feeder:
                 feed = await pull_feeder(self.hass, feeder)
             else:
-                feed = await pull_public(self.hass, lat, lon, max(radius * 2, 40))
+                feed = await pull_public(self.hass, lat, lon, max(radius * 3, 80))
         except Exception as err:
             raise UpdateFailed(str(err)) from err
 

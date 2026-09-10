@@ -7,7 +7,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, PLATFORMS
+from .const import CONF_ALERT_RADIUS, CONF_NOTIFY, DOMAIN, PLATFORMS
 from .coordinator import AdsbCoordinator
 from .frontend import JSModuleRegistration
 
@@ -19,6 +19,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     async def _register_frontend(_event=None) -> None:
         await JSModuleRegistration(hass).async_register()
+        await _async_register_services(hass)
 
     if hass.state == CoreState.running:
         await _register_frontend()
@@ -29,6 +30,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await JSModuleRegistration(hass).async_register()
+    await _async_register_services(hass)
     coordinator = AdsbCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
@@ -45,3 +47,25 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unload
+
+
+async def _async_register_services(hass: HomeAssistant) -> None:
+    if hass.services.has_service(DOMAIN, "set_options"):
+        return
+
+    async def _set_options(call) -> None:
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            return
+        entry = entries[0]
+        opts = {**entry.options}
+        if "radius_nm" in call.data:
+            opts[CONF_ALERT_RADIUS] = int(call.data["radius_nm"])
+        if "notify" in call.data:
+            opts[CONF_NOTIFY] = bool(call.data["notify"])
+        hass.config_entries.async_update_entry(entry, options=opts)
+        coord = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+        if coord:
+            await coord.async_request_refresh()
+
+    hass.services.async_register(DOMAIN, "set_options", _set_options)
