@@ -1,7 +1,6 @@
 {
   "name": "ADS-B Globe",
-  "filename": "adsb-globe-card.js",
-  "content_in_root": true,
-  "homeassistant": "2024.8.0",
-  "render_readme": true
+  "filename": "ha-adsb-globe.js",
+  "render_readme": true,
+  "homeassistant": "2024.8.0"
 }

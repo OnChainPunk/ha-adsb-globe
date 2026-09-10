@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.0.2";
+const CARD_VERSION = "1.0.3";
 const POLL_MS = 1000;
 const MAX_DIST = 250;
 const MAX_TRAIL = 64;
@@ -91,53 +91,26 @@ function slim(raw) {
   };
 }
 
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    if (window.L) return resolve(window.L);
-    const el = document.createElement("script");
-    el.src = src;
-    el.onload = () => (window.L ? resolve(window.L) : reject(new Error("no L")));
-    el.onerror = () => reject(new Error(src));
-    document.head.appendChild(el);
-  });
-}
-
-function loadCss(href) {
-  if ([...document.querySelectorAll("link")].some((s) => s.href && s.href.includes("leaflet.css"))) return;
-  const el = document.createElement("link");
-  el.rel = "stylesheet";
-  el.href = href;
-  document.head.appendChild(el);
-}
-
 function ensureLeafletCss() {
   if (document.getElementById("adsb-leaflet-css")) return;
-  if (window.__ADSB_LEAFLET_CSS__) {
-    const s = document.createElement("style");
-    s.id = "adsb-leaflet-css";
-    s.textContent = window.__ADSB_LEAFLET_CSS__;
-    document.head.appendChild(s);
-    return;
-  }
-  ["/adsb_globe/leaflet.css", "/local/adsb_globe/leaflet.css", "/hacsfiles/ha-adsb-globe/leaflet.css"].forEach(loadCss);
+  const css = window.__ADSB_LEAFLET_CSS__;
+  if (!css) return;
+  const s = document.createElement("style");
+  s.id = "adsb-leaflet-css";
+  s.textContent = css;
+  document.head.appendChild(s);
 }
 
-async function ensureLeaflet() {
-  if (window.L) return window.L;
-  const urls = [
-    "/adsb_globe/leaflet.js",
-    "/local/adsb_globe/leaflet.js",
-    "/hacsfiles/ha-adsb-globe/leaflet.js",
-  ];
-  for (const u of urls) {
-    try {
-      await loadScript(u);
-      if (window.L) return window.L;
-    } catch (err) {
-      /* try next */
-    }
-  }
-  throw new Error("Leaflet failed to load");
+function ensureLeaflet() {
+  if (window.L) return Promise.resolve(window.L);
+  ensureLeafletCss();
+  const src = window.__ADSB_LEAFLET_JS__;
+  if (!src) return Promise.reject(new Error("Leaflet source missing"));
+  const el = document.createElement("script");
+  el.text = src;
+  document.head.appendChild(el);
+  if (window.L) return Promise.resolve(window.L);
+  return Promise.reject(new Error("Leaflet failed to load"));
 }
 
 class AdsbGlobeCard extends HTMLElement {
@@ -178,6 +151,10 @@ class AdsbGlobeCard extends HTMLElement {
 
   getCardSize() {
     return 9;
+  }
+
+  getLayoutOptions() {
+    return { grid_rows: 6, grid_columns: 4, grid_min_rows: 4, grid_min_columns: 2 };
   }
 
   disconnectedCallback() {
@@ -415,7 +392,7 @@ class AdsbGlobeCard extends HTMLElement {
         : "";
       const html = `<div class="adsb-wrap" style="width:${size}px;height:${size}px">
         <div class="adsb-rot" style="transform:rotate(${rot}deg)">
-          <svg viewBox="${def.vb}" width="${size}" height="${size}"><path d="${def.d}" fill="${color}" stroke="${sel ? "#fff" : "#111}" stroke-width="1.2"/></svg>
+          <svg viewBox="${def.vb}" width="${size}" height="${size}"><path d="${def.d}" fill="${color}" stroke="${sel ? '#fff' : '#111'}" stroke-width="1.2"/></svg>
         </div>${label}</div>`;
       const existing = this._markers.get(ac.hex);
       if (existing) {
@@ -514,8 +491,8 @@ if (!window.customCards.some((c) => c.type === "adsb-globe-card")) {
   window.customCards.push({
     type: "adsb-globe-card",
     name: "ADS-B Globe",
-    description: "Live aircraft map (tar1090 / ADS-B Exchange style).",
-    preview: true,
+    description: "Live ADS-B aircraft map around your home.",
+    preview: false,
     documentationURL: "https://github.com/OnChainPunk/ha-adsb-globe",
   });
 }
