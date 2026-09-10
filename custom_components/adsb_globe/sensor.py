@@ -16,11 +16,37 @@ async def async_setup_entry(
     coord: AdsbCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
-            AdsbCountSensor(coord, entry, "count", "Aircraft in range", "mdi:airplane"),
+            AdsbInAreaSensor(coord, entry),
             AdsbCountSensor(coord, entry, "airborne", "Airborne", "mdi:airplane-takeoff"),
             AdsbNearestSensor(coord, entry),
         ]
     )
+
+
+class AdsbInAreaSensor(CoordinatorEntity[AdsbCoordinator], SensorEntity):
+    _attr_name = "ADS-B in area"
+    _attr_icon = "mdi:airplane"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "aircraft"
+
+    def __init__(self, coordinator: AdsbCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_in_area"
+
+    @property
+    def native_value(self):
+        return (self.coordinator.data or {}).get("count")
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data or {}
+        return {
+            "latitude": data.get("lat"),
+            "longitude": data.get("lon"),
+            "radius_nm": data.get("radius"),
+            "source": data.get("source"),
+            "aircraft": data.get("ac") or [],
+        }
 
 
 class AdsbCountSensor(CoordinatorEntity[AdsbCoordinator], SensorEntity):

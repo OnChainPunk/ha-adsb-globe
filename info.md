@@ -1,8 +1,1 @@
-# ADS-B Globe
-
-Lovelace card + sensors for live aircraft around your Home Assistant `zone.home`.
-
-Install as a **HACS integration**, restart, then **Add integration → ADS-B Globe**.
-Add a Manual card with `type: custom:adsb-globe-card`.
-
-See the README for Proxmox / HAOS steps and feeder URL.
+HACS **Integration** (not Dashboard). After download + restart, add **ADS-B Globe** under Settings → Devices & services. The Lovelace card then appears in Add card automatically. Notifications fire when military, helicopter, Chinook, Apache, police, fighter or emergency aircraft enter your radius.

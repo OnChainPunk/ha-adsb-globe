@@ -1,13 +1,13 @@
 {
   "domain": "adsb_globe",
   "name": "ADS-B Globe",
-  "after_dependencies": ["frontend", "http", "lovelace"],
   "codeowners": ["@OnChainPunk"],
   "config_flow": true,
+  "dependencies": ["frontend", "http"],
   "documentation": "https://github.com/OnChainPunk/ha-adsb-globe",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/OnChainPunk/ha-adsb-globe/issues",
   "requirements": [],
-  "version": "1.0.3"
+  "version": "1.1.0"
 }

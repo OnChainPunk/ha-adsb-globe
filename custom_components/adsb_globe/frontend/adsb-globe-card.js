@@ -1,5 +1,5 @@
-const CARD_VERSION = "1.0.3";
-const POLL_MS = 1000;
+const CARD_VERSION = "1.1.0";
+const POLL_MS = 5000;
 const MAX_DIST = 250;
 const MAX_TRAIL = 64;
 
@@ -91,38 +91,66 @@ function slim(raw) {
   };
 }
 
-function ensureLeafletCss() {
-  if (document.getElementById("adsb-leaflet-css")) return;
-  const css = window.__ADSB_LEAFLET_CSS__;
-  if (!css) return;
-  const s = document.createElement("style");
-  s.id = "adsb-leaflet-css";
-  s.textContent = css;
-  document.head.appendChild(s);
+const LEAFLET_CSS_LOCAL = "/adsb_globe/leaflet.css";
+const LEAFLET_JS_LOCAL = "/adsb_globe/leaflet.js";
+const LEAFLET_CSS_CDN = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+const LEAFLET_JS_CDN = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+let leafletLoader = null;
+
+function loadCss(href) {
+  if (document.querySelector(`link[href="${href}"]`)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  document.head.appendChild(link);
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      if (window.L) return resolve(window.L);
+      existing.addEventListener("load", () => resolve(window.L));
+      existing.addEventListener("error", reject);
+      return;
+    }
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = () => (window.L ? resolve(window.L) : reject(new Error("no L")));
+    el.onerror = reject;
+    document.head.appendChild(el);
+  });
 }
 
 function ensureLeaflet() {
   if (window.L) return Promise.resolve(window.L);
-  ensureLeafletCss();
-  const src = window.__ADSB_LEAFLET_JS__;
-  if (!src) return Promise.reject(new Error("Leaflet source missing"));
-  const el = document.createElement("script");
-  el.text = src;
-  document.head.appendChild(el);
-  if (window.L) return Promise.resolve(window.L);
-  return Promise.reject(new Error("Leaflet failed to load"));
+  if (leafletLoader) return leafletLoader;
+  leafletLoader = (async () => {
+    loadCss(LEAFLET_CSS_LOCAL);
+    try {
+      await loadScript(LEAFLET_JS_LOCAL);
+      if (window.L) return window.L;
+    } catch (err) { /* fall through to CDN, same as Flightradar24 */ }
+    loadCss(LEAFLET_CSS_CDN);
+    await loadScript(LEAFLET_JS_CDN);
+    if (!window.L) throw new Error("Leaflet failed to load");
+    return window.L;
+  })();
+  return leafletLoader;
 }
 
 class AdsbGlobeCard extends HTMLElement {
-  static getStubConfig() {
+  static getStubConfig(hass) {
+    const states = (hass && hass.states) || {};
+    const entity = Object.keys(states).find((id) => Array.isArray(states[id]?.attributes?.aircraft)) || "";
     return {
+      entity,
       title: "Airspace",
       map: "dark",
       show_labels: true,
       show_trails: true,
       show_range_rings: true,
       show_ground: false,
-      alert: { enabled: true, radius_nm: 15, on: ["military", "helicopter", "chinook", "apache", "police", "fighter", "emergency"] },
     };
   }
 
@@ -142,11 +170,18 @@ class AdsbGlobeCard extends HTMLElement {
   setConfig(config) {
     this._config = { map: "dark", show_labels: true, show_trails: true, show_range_rings: true, show_ground: false, ...config };
     this._config.alert = { enabled: true, radius_nm: 15, on: ["military", "helicopter", "chinook", "apache", "police", "fighter", "emergency"], ...(config.alert || {}) };
+    if (!this.querySelector("ha-card")) {
+      const card = document.createElement("ha-card");
+      card.className = "adsb-card";
+      card.innerHTML = '<div class="adsb-head">ADS-B Globe</div><div class="adsb-map" style="height:460px;display:flex;align-items:center;justify-content:center;background:#111;color:#9e9e9e;font:13px sans-serif">Loading map…</div>';
+      this.appendChild(card);
+    }
   }
 
   set hass(hass) {
     this._hass = hass;
     if (!this._built) this._build();
+    else if (this._map && this._config.entity) this._fetch();
   }
 
   getCardSize() {
@@ -232,7 +267,6 @@ class AdsbGlobeCard extends HTMLElement {
     this._tools = root.querySelector(".adsb-tools");
     this._renderTools();
 
-    ensureLeafletCss();
     try {
       await ensureLeaflet();
     } catch (err) {
@@ -342,6 +376,11 @@ class AdsbGlobeCard extends HTMLElement {
 
   async _fetch() {
     if (this._gone || this._paused || this._busy || !this._map) return;
+    const st = this._config.entity && this._hass && this._hass.states[this._config.entity];
+    if (st && Array.isArray(st.attributes.aircraft)) {
+      this._paint({ ac: st.attributes.aircraft, source: "ha" });
+      return;
+    }
     this._busy = true;
     const c = this._map.getCenter();
     const dist = this._viewDist();
@@ -491,7 +530,7 @@ if (!window.customCards.some((c) => c.type === "adsb-globe-card")) {
   window.customCards.push({
     type: "adsb-globe-card",
     name: "ADS-B Globe",
-    description: "Live ADS-B aircraft map around your home.",
+    description: "Live aircraft map around your home, with in-radius alerts.",
     preview: false,
     documentationURL: "https://github.com/OnChainPunk/ha-adsb-globe",
   });

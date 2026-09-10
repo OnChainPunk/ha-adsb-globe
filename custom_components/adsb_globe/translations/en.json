@@ -3,11 +3,15 @@
     "step": {
       "user": {
         "title": "ADS-B Globe",
-        "description": "Leave the feeder blank to use the public adsb.lol / adsb.fi network. Point it at a local tar1090 / readsb if you run one (Proxmox LXC or another VM), e.g. http://192.168.1.20/tar1090/data/aircraft.json",
+        "description": "Defaults to your Home Assistant location. Leave feeder blank to use the public ADS-B network. Notifications fire when military / helicopter / Chinook / Apache / police / fighter / emergency aircraft enter the radius.",
         "data": {
           "name": "Name",
-          "feeder_url": "Local feeder URL (optional)",
-          "alert_radius_nm": "Alert radius (nautical miles)"
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "alert_radius_nm": "Alert radius (nautical miles)",
+          "scan_interval": "Update interval (seconds)",
+          "feeder_url": "Local tar1090 URL (optional)",
+          "notify": "Create notifications when alert types enter the radius"
         }
       }
     },
@@ -20,8 +24,13 @@
       "init": {
         "title": "ADS-B Globe options",
         "data": {
-          "feeder_url": "Local feeder URL (optional)",
-          "alert_radius_nm": "Alert radius (nautical miles)"
+          "name": "Name",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "alert_radius_nm": "Alert radius (nautical miles)",
+          "scan_interval": "Update interval (seconds)",
+          "feeder_url": "Local tar1090 URL (optional)",
+          "notify": "Create notifications when alert types enter the radius"
         }
       }
     }
