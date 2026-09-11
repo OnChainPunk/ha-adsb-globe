@@ -10,6 +10,7 @@ from homeassistant.helpers.typing import ConfigType
 from .const import CONF_ALERT_RADIUS, CONF_NOTIFY, DOMAIN, PLATFORMS
 from .coordinator import AdsbCoordinator
 from .frontend import JSModuleRegistration
+from .view import AdsbAircraftView
 
 _LOGGER = getLogger(__name__)
 
@@ -31,6 +32,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await JSModuleRegistration(hass).async_register()
     await _async_register_services(hass)
+    if not hass.data.get(f"{DOMAIN}_view"):
+        hass.http.register_view(AdsbAircraftView())
+        hass.data[f"{DOMAIN}_view"] = True
     coordinator = AdsbCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
