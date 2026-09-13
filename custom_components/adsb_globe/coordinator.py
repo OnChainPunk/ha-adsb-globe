@@ -33,7 +33,7 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=timedelta(seconds=max(3, interval)),
+            update_interval=timedelta(seconds=max(2, interval)),
         )
         self.entry = entry
         self._primed = False

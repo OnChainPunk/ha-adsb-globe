@@ -1,5 +1,5 @@
-const CARD_VERSION = "1.1.3";
-const POLL_MS = 2000;
+const CARD_VERSION = "1.2.0";
+const POLL_MS = 1000;
 const MAX_DIST = 250;
 const MAX_TRAIL = 64;
 const LEAFLET_JS = "/adsb_globe/leaflet.js";
@@ -782,7 +782,7 @@ class AdsbGlobeCard extends HTMLElement {
   static getStubConfig(hass) {
     const states = (hass && hass.states) || {};
     const entity = Object.keys(states).find((id) => Array.isArray(states[id]?.attributes?.aircraft)) || "";
-    return { entity, title: "Airspace", map: "osm", show_labels: true, show_trails: true, show_range_rings: true, show_ground: false };
+    return { entity, title: "Airspace", map: "dark", show_labels: false, show_trails: true, show_range_rings: true, show_ground: false };
   }
 
   static getConfigForm() {
@@ -799,7 +799,7 @@ class AdsbGlobeCard extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = { map: "osm", show_labels: true, show_trails: true, show_range_rings: true, show_ground: false, ...config };
+    this._config = { map: "dark", show_labels: false, show_trails: true, show_range_rings: true, show_ground: false, ...config };
     this._config.alert = {
       enabled: true,
       radius_nm: 15,
@@ -816,11 +816,11 @@ class AdsbGlobeCard extends HTMLElement {
   }
 
   getCardSize() {
-    return 8;
+    return 10;
   }
 
   getLayoutOptions() {
-    return { grid_rows: 6, grid_columns: 4, grid_min_rows: 4, grid_min_columns: 2 };
+    return { grid_rows: 8, grid_columns: 12, grid_min_rows: 6, grid_min_columns: 6 };
   }
 
   connectedCallback() {
@@ -832,14 +832,9 @@ class AdsbGlobeCard extends HTMLElement {
 
   disconnectedCallback() {
     this._gone = true;
-    if (this._timer) {
-      clearInterval(this._timer);
-      this._timer = null;
-    }
-    if (this._ro) {
-      this._ro.disconnect();
-      this._ro = null;
-    }
+    if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    if (this._raf) { cancelAnimationFrame(this._raf); this._raf = null; }
+    if (this._ro) { this._ro.disconnect(); this._ro = null; }
     if (this._map) {
       try { this._map.remove(); } catch (err) { /* ignore */ }
       this._map = null;
@@ -858,56 +853,136 @@ class AdsbGlobeCard extends HTMLElement {
   _styles() {
     return `
       :host { display: block; }
-      ha-card { overflow: hidden; display: block; }
-      .head { display:flex; align-items:center; gap:8px; padding:10px 12px 8px; font: 500 14px var(--ha-font-family, Roboto, sans-serif); color: var(--primary-text-color); position: relative; z-index: 3; }
-      .dot { width:8px; height:8px; border-radius:50%; background:#4caf50; box-shadow:0 0 8px #4caf50; flex-shrink:0; }
-      .dot.off { background:#9e9e9e; box-shadow:none; }
-      .title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .meta { margin-left:auto; font-size:12px; font-weight:400; color: var(--secondary-text-color); white-space: nowrap; flex-shrink: 0; }
-      .gear { border:1px solid var(--divider-color); background:transparent; color:var(--primary-text-color); border-radius:4px; width:28px; height:28px; cursor:pointer; flex-shrink:0; }
-      .map-wrap { position: relative; width: 100%; aspect-ratio: 16 / 10; overflow: hidden; z-index: 0; background: #1a1a1a; contain: layout paint; }
+      ha-card { overflow: hidden; display: block; background: #111; }
+      .wrap { position: relative; width: 100%; min-height: 560px; height: min(70vh, 720px); background: #0d1117; }
       #map { position: absolute; inset: 0; width: 100%; height: 100%; }
-      .leaflet-container .leaflet-tile,
-      .leaflet-container img.leaflet-tile {
-        max-width: none !important;
-        max-height: none !important;
-        padding: 0 !important;
+      .leaflet-container { background: #0d1117; font: 12px/1.4 ui-sans-serif, system-ui, sans-serif; }
+      .leaflet-container .leaflet-tile, .leaflet-container img.leaflet-tile {
+        max-width: none !important; max-height: none !important; padding: 0 !important;
       }
-      .leaflet-div-icon { background: transparent !important; border: 0 !important; }
-      .leaflet-control-attribution { background: rgba(255,255,255,.9); color:#333; font-size:11px; max-width: calc(100% - 10px); }
-      .settings { display:none; position:absolute; right:10px; top:10px; z-index:2000; width:250px; background: color-mix(in srgb, var(--card-background-color) 94%, transparent); border:1px solid var(--divider-color); border-radius:8px; padding:12px; font-size:13px; color: var(--primary-text-color); }
-      .settings.open { display:block; }
-      .settings h3 { margin:0 0 8px; font-size:14px; }
-      .settings label { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 0; }
-      .settings input[type=range] { width:120px; }
-      .settings .hint { color:var(--secondary-text-color); font-size:11px; }
-      .tools { display:flex; flex-wrap:wrap; gap:4px; padding:8px 10px 10px; position: relative; z-index: 3; }
-      .tools button { border:1px solid var(--divider-color); background: var(--secondary-background-color, var(--card-background-color)); color: var(--primary-text-color); border-radius:4px; padding:4px 8px; font-size:11px; cursor:pointer; }
-      .tools button.on { border-color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 18%, transparent); }
-      .info { position:absolute; left:10px; top:10px; z-index:1500; background: color-mix(in srgb, var(--card-background-color) 92%, transparent); border:1px solid var(--divider-color); border-radius:6px; padding:8px 10px; min-width:160px; font-size:12px; color: var(--primary-text-color); }
-      .info .cs { font-weight:600; font-size:14px; }
-      .ac-marker { display:flex; align-items:center; justify-content:center; transform-origin: center; }
-      .ac-label { position:absolute; top:100%; left:50%; transform:translate(-50%, 2px); font: 10px/1.2 ui-monospace, monospace; color:#fff; text-shadow:0 1px 2px #000; white-space:nowrap; text-align:center; pointer-events:none; }
-      .home-pin { width:10px; height:10px; border-radius:50%; background:#03a9f4; border:2px solid #fff; box-shadow:0 0 0 1px #03a9f4; }
-        `;
+      .leaflet-div-icon { background: transparent !important; border: 0 !important; overflow: visible !important; }
+      .leaflet-control-zoom { display: none; }
+      .leaflet-control-attribution { background: rgba(0,0,0,.45); color: #ccc; font-size: 10px; }
+      .leaflet-control-attribution a { color: #9ad; }
+
+      .hud {
+        position: absolute; top: 10px; left: 10px; z-index: 1200;
+        display: flex; align-items: center; gap: 8px; pointer-events: none;
+      }
+      .chip {
+        pointer-events: none;
+        display: flex; align-items: center; gap: 8px;
+        background: rgba(12,16,22,.86); color: #fff; border-radius: 8px;
+        padding: 7px 12px; font: 600 13px/1.2 ui-sans-serif, system-ui, sans-serif;
+        box-shadow: 0 2px 10px rgba(0,0,0,.35);
+      }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: #4caf50; box-shadow: 0 0 8px #4caf50; }
+      .dot.off { background: #9e9e9e; box-shadow: none; }
+      .meta { font-weight: 500; color: #cfd8dc; font-size: 12px; }
+
+      .rail {
+        position: absolute; top: 10px; right: 10px; z-index: 1300;
+        display: flex; flex-direction: column; gap: 5px;
+      }
+      .rail button, .zoom button, .layers button {
+        width: 38px; height: 38px; border: 0; border-radius: 8px; cursor: pointer;
+        background: rgba(12,16,22,.88); color: #e8eef4;
+        font: 700 13px/1 ui-sans-serif, system-ui, sans-serif;
+        box-shadow: 0 2px 8px rgba(0,0,0,.35);
+      }
+      .rail button:hover, .zoom button:hover, .layers button:hover { background: rgba(30,38,50,.95); }
+      .rail button.on, .layers button.on { background: #29b6f6; color: #08202c; }
+      .rail button.gear { font-size: 16px; }
+
+      .zoom {
+        position: absolute; right: 10px; bottom: 54px; z-index: 1300;
+        display: flex; flex-direction: column; gap: 5px;
+      }
+
+      .layers {
+        position: absolute; left: 10px; bottom: 28px; z-index: 1300;
+        display: flex; gap: 4px; flex-wrap: wrap; max-width: calc(100% - 60px);
+      }
+      .layers button { width: auto; height: 28px; padding: 0 8px; font-size: 11px; font-weight: 650; }
+
+      .altbar {
+        position: absolute; left: 10px; right: 58px; bottom: 8px; z-index: 1200;
+        height: 7px; border-radius: 4px; overflow: hidden;
+        background: linear-gradient(90deg, hsl(240,90%,58%), hsl(180,90%,55%), hsl(120,90%,50%), hsl(60,95%,50%), hsl(30,95%,52%), hsl(0,90%,55%));
+        box-shadow: 0 1px 4px rgba(0,0,0,.4);
+        pointer-events: none;
+      }
+      .altbar span { position: absolute; top: 9px; font: 600 9px/1 ui-sans-serif, system-ui; color: #ddd; text-shadow: 0 1px 2px #000; }
+      .altbar .l { left: 0; } .altbar .m { left: 50%; transform: translateX(-50%); } .altbar .r { right: 0; }
+
+      .nm {
+        position: absolute; left: 10px; bottom: 42px; z-index: 1200;
+        background: rgba(12,16,22,.86); color: #fff; border-radius: 6px;
+        padding: 4px 8px; font: 650 11px/1 ui-monospace, monospace;
+        pointer-events: none;
+      }
+
+      .settings {
+        display: none; position: absolute; right: 54px; top: 10px; z-index: 1400;
+        width: 250px; background: rgba(12,16,22,.94); color: #e8eef4;
+        border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 12px; font-size: 13px;
+        box-shadow: 0 8px 24px rgba(0,0,0,.45);
+      }
+      .settings.open { display: block; }
+      .settings h3 { margin: 0 0 8px; font-size: 14px; }
+      .settings label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+      .settings input[type=range] { width: 120px; }
+      .settings .hint { color: #90a4ae; font-size: 11px; }
+
+      .info {
+        position: absolute; left: 10px; top: 48px; z-index: 1400;
+        background: rgba(12,16,22,.92); color: #e8eef4;
+        border: 1px solid rgba(255,255,255,.08); border-radius: 10px;
+        padding: 10px 12px; min-width: 180px; font: 12px/1.45 ui-sans-serif, system-ui;
+        box-shadow: 0 8px 24px rgba(0,0,0,.4);
+      }
+      .info .cs { font-weight: 700; font-size: 15px; letter-spacing: .02em; }
+      .info .sub { color: #90a4ae; }
+      .info button.close { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: #90a4ae; cursor: pointer; font-size: 14px; }
+
+      .ac-marker { display: flex; align-items: center; justify-content: center; transform-origin: center; }
+      .ac-label {
+        position: absolute; top: 100%; left: 50%; transform: translate(-50%, 2px);
+        font: 700 10px/1.2 ui-monospace, monospace; color: #fff;
+        text-shadow: 0 1px 2px #000, 0 0 6px #000; white-space: nowrap; text-align: center; pointer-events: none;
+      }
+      .home-pin { width: 10px; height: 10px; border-radius: 50%; background: #29b6f6; border: 2px solid #fff; box-shadow: 0 0 0 1px #29b6f6; }
+    `;
   }
 
   _renderShell() {
     if (!this.shadowRoot || !this._config) return;
     if (this.shadowRoot.getElementById("map") && this._map) return;
-    const title = this._config.title || "ADS-B Globe";
+    const title = this._config.title || "Airspace";
     this.shadowRoot.innerHTML = `
       <style>${LEAFLET_CSS_INLINE}</style>
       <style>${this._styles()}</style>
       <ha-card>
-        <div class="head">
-          <span class="dot"></span>
-          <span class="title">${title}</span>
-          <span class="meta">connecting</span>
-          <button type="button" class="gear" title="Settings">⚙</button>
-        </div>
-        <div class="map-wrap">
+        <div class="wrap">
           <div id="map"></div>
+          <div class="hud">
+            <div class="chip"><span class="dot"></span><span class="title">${title}</span><span class="meta">connecting</span></div>
+          </div>
+          <div class="rail">
+            <button type="button" data-act="labels" title="Labels">L</button>
+            <button type="button" data-act="trail" title="Selected trail">T</button>
+            <button type="button" data-act="ground" title="Ground traffic">G</button>
+            <button type="button" data-act="military" title="Military only">M</button>
+            <button type="button" data-act="pause" title="Pause">P</button>
+            <button type="button" data-act="settings" class="gear" title="Settings">⚙</button>
+          </div>
+          <div class="zoom">
+            <button type="button" data-act="in" title="Zoom in">+</button>
+            <button type="button" data-act="out" title="Zoom out">−</button>
+          </div>
+          <div class="layers"></div>
+          <div class="nm">— NM</div>
+          <div class="altbar"><span class="l">0</span><span class="m">20k</span><span class="r">40,000 ft</span></div>
           <div class="settings">
             <h3>Settings</h3>
             <label>Alert range <span class="range-val">15</span> NM
@@ -922,44 +997,91 @@ class AdsbGlobeCard extends HTMLElement {
             <div class="hint">Range and notifications save to the integration.</div>
           </div>
         </div>
-        <div class="tools"></div>
       </ha-card>
     `;
     this._meta = this._$(".meta");
     this._dot = this._$(".dot");
     this._mapEl = this.shadowRoot.getElementById("map");
-    this._tools = this._$(".tools");
     this._settingsEl = this._$(".settings");
-    this._bindSettings();
-    this._labels = this._config.show_labels !== false;
+    this._nmEl = this._$(".nm");
+    this._labels = this._config.show_labels === true;
     this._tracks = this._config.show_trails !== false;
     this._ground = !!this._config.show_ground;
     this._milOnly = false;
     this._paused = false;
-    this._mapId = this._config.map && MAPS[this._config.map] ? this._config.map : "osm";
-    this._renderTools();
+    this._mapId = this._config.map && MAPS[this._config.map] ? this._config.map : "dark";
+    this._lastAc = [];
+    this._interp = new Map();
+    this._bindChrome();
+    this._renderLayers();
+    this._syncRail();
+  }
+
+  _bindChrome() {
+    const root = this.shadowRoot;
+    root.querySelector(".rail").addEventListener("click", (ev) => {
+      const b = ev.target.closest("button");
+      if (!b) return;
+      const act = b.dataset.act;
+      if (act === "labels") { this._labels = !this._labels; this._redrawIcons(); }
+      else if (act === "trail") { this._tracks = !this._tracks; if (!this._tracks && this._line && this._map) { this._map.removeLayer(this._line); this._line = null; } }
+      else if (act === "ground") { this._ground = !this._ground; this._paint({ ac: this._lastAc, source: this._lastSource || "live" }); }
+      else if (act === "military") { this._milOnly = !this._milOnly; this._paint({ ac: this._lastAc, source: this._lastSource || "live" }); }
+      else if (act === "pause") {
+        this._paused = !this._paused;
+        if (this._dot) this._dot.classList.toggle("off", this._paused);
+        if (!this._paused) this._fetch();
+      }
+      else if (act === "settings") {
+        this._settingsEl.classList.toggle("open");
+        this._syncSettings();
+      }
+      this._syncRail();
+    });
+    root.querySelector(".zoom").addEventListener("click", (ev) => {
+      const b = ev.target.closest("button");
+      if (!b || !this._map) return;
+      if (b.dataset.act === "in") this._map.zoomIn();
+      if (b.dataset.act === "out") this._map.zoomOut();
+    });
+    this._bindSettings();
+  }
+
+  _syncRail() {
+    const rail = this._$(".rail");
+    if (!rail) return;
+    rail.querySelector('[data-act="labels"]').classList.toggle("on", this._labels);
+    rail.querySelector('[data-act="trail"]').classList.toggle("on", this._tracks);
+    rail.querySelector('[data-act="ground"]').classList.toggle("on", this._ground);
+    rail.querySelector('[data-act="military"]').classList.toggle("on", this._milOnly);
+    rail.querySelector('[data-act="pause"]').classList.toggle("on", this._paused);
+  }
+
+  _renderLayers() {
+    const el = this._$(".layers");
+    if (!el) return;
+    el.innerHTML = "";
+    Object.keys(MAPS).forEach((id) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = id[0].toUpperCase() + id.slice(1);
+      if (id === this._mapId) b.classList.add("on");
+      b.addEventListener("click", () => {
+        this._mapId = id;
+        this._setTiles(id);
+        this._renderLayers();
+      });
+      el.appendChild(b);
+    });
   }
 
   _bindSettings() {
-    const gear = this._$(".gear");
     const panel = this._settingsEl;
-    if (!gear || !panel) return;
+    if (!panel) return;
     const range = panel.querySelector(".range");
     const rangeVal = panel.querySelector(".range-val");
     const notify = panel.querySelector(".notify");
     const rings = panel.querySelector(".rings");
-    const apply = () => {
-      range.value = String(this._radiusNm());
-      rangeVal.textContent = String(this._radiusNm());
-      notify.checked = this._notifyOn();
-      rings.checked = this._config.show_range_rings !== false;
-    };
-    apply();
-    gear.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      apply();
-      panel.classList.toggle("open");
-    });
     range.addEventListener("input", () => { rangeVal.textContent = range.value; });
     const save = () => {
       const radius = Number(range.value);
@@ -978,31 +1100,13 @@ class AdsbGlobeCard extends HTMLElement {
     });
   }
 
-  _renderTools() {
-    if (!this._tools) return;
-    this._tools.innerHTML = "";
-    const add = (label, on, fn) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = label;
-      if (on) b.classList.add("on");
-      b.addEventListener("click", (ev) => { ev.preventDefault(); fn(); });
-      this._tools.appendChild(b);
-    };
-    add("Labels", this._labels, () => { this._labels = !this._labels; this._renderTools(); });
-    add("Trail", this._tracks, () => { this._tracks = !this._tracks; this._renderTools(); });
-    add("Ground", this._ground, () => { this._ground = !this._ground; this._renderTools(); });
-    add("Military", this._milOnly, () => { this._milOnly = !this._milOnly; this._renderTools(); });
-    add("Pause", this._paused, () => {
-      this._paused = !this._paused;
-      if (this._dot) this._dot.classList.toggle("off", this._paused);
-      this._renderTools();
-    });
-    Object.keys(MAPS).forEach((id) => add(id[0].toUpperCase() + id.slice(1), this._mapId === id, () => {
-      this._mapId = id;
-      this._setTiles(id);
-      this._renderTools();
-    }));
+  _syncSettings() {
+    const panel = this._settingsEl;
+    if (!panel) return;
+    panel.querySelector(".range").value = String(this._radiusNm());
+    panel.querySelector(".range-val").textContent = String(this._radiusNm());
+    panel.querySelector(".notify").checked = this._notifyOn();
+    panel.querySelector(".rings").checked = this._config.show_range_rings !== false;
   }
 
   _waitForSize(el) {
@@ -1010,10 +1114,7 @@ class AdsbGlobeCard extends HTMLElement {
       const ready = () => el && el.clientWidth > 40 && el.clientHeight > 40;
       if (ready()) return resolve();
       const ro = new ResizeObserver(() => {
-        if (ready()) {
-          ro.disconnect();
-          resolve();
-        }
+        if (ready()) { ro.disconnect(); resolve(); }
       });
       ro.observe(el);
       setTimeout(() => { ro.disconnect(); resolve(); }, 2500);
@@ -1037,7 +1138,7 @@ class AdsbGlobeCard extends HTMLElement {
     const L = window.L;
     const home = this._home();
     this._map = L.map(this._mapEl, {
-      zoomControl: true,
+      zoomControl: false,
       attributionControl: true,
       worldCopyJump: true,
     });
@@ -1050,18 +1151,32 @@ class AdsbGlobeCard extends HTMLElement {
     this._alertPrimed = false;
     this._map.setView([home.lat, home.lon], 9);
     this._drawRings();
-    this._map.on("moveend", () => this._fetch());
-    const wrap = this._$(".map-wrap");
-    this._ro = new ResizeObserver(() => {
-      if (this._map) this._map.invalidateSize();
-    });
+    this._map.on("moveend", () => { this._updateScale(); this._fetch(); });
+    this._map.on("zoomend", () => this._updateScale());
+    const wrap = this._$(".wrap");
+    this._ro = new ResizeObserver(() => { if (this._map) this._map.invalidateSize(); });
     if (wrap) this._ro.observe(wrap);
     const fixSize = () => { if (this._map) this._map.invalidateSize(); };
     requestAnimationFrame(fixSize);
-    setTimeout(fixSize, 100);
+    setTimeout(fixSize, 120);
     setTimeout(fixSize, 500);
-    this._map.whenReady(() => this._fetch());
+    this._map.whenReady(() => { this._updateScale(); this._fetch(); });
     this._timer = setInterval(() => this._fetch(), POLL_MS);
+    const tick = () => {
+      if (this._gone) return;
+      this._raf = requestAnimationFrame(tick);
+      this._interpolate();
+    };
+    this._raf = requestAnimationFrame(tick);
+  }
+
+  _updateScale() {
+    if (!this._map || !this._nmEl) return;
+    const y = this._map.getSize().y / 2;
+    const left = this._map.containerPointToLatLng([0, y]);
+    const right = this._map.containerPointToLatLng([100, y]);
+    const nm = haversineNm(left.lat, left.lng, right.lat, right.lng);
+    this._nmEl.textContent = `${nm.toFixed(nm >= 10 ? 0 : 1)} NM`;
   }
 
   _home() {
@@ -1079,7 +1194,7 @@ class AdsbGlobeCard extends HTMLElement {
   _setTiles(id) {
     if (!this._map || !window.L) return;
     if (this._tiles) this._map.removeLayer(this._tiles);
-    const spec = MAPS[id] || MAPS.osm;
+    const spec = MAPS[id] || MAPS.dark;
     const opts = { attribution: spec.attr + " · traffic adsb.lol", maxZoom: 18, referrerPolicy: "strict-origin-when-cross-origin" };
     if (spec.sub) opts.subdomains = spec.sub;
     this._tiles = window.L.tileLayer(spec.url, opts).addTo(this._map);
@@ -1096,7 +1211,7 @@ class AdsbGlobeCard extends HTMLElement {
     }).addTo(this._rings);
     if (this._config.show_range_rings !== false) {
       [25, 50, 100].forEach((nm) => {
-        L.circle([home.lat, home.lon], { radius: nm * 1852, color: "#03a9f4", weight: 1, opacity: 0.35, fill: false, interactive: false }).addTo(this._rings);
+        L.circle([home.lat, home.lon], { radius: nm * 1852, color: "#29b6f6", weight: 1, opacity: 0.35, fill: false, interactive: false }).addTo(this._rings);
       });
     }
     L.circle([home.lat, home.lon], {
@@ -1105,7 +1220,7 @@ class AdsbGlobeCard extends HTMLElement {
       weight: 2,
       opacity: 0.85,
       fillColor: "#ffa726",
-      fillOpacity: 0.08,
+      fillOpacity: 0.07,
       dashArray: "6 5",
       interactive: false,
     }).addTo(this._rings);
@@ -1136,13 +1251,6 @@ class AdsbGlobeCard extends HTMLElement {
     return !al || al.enabled !== false;
   }
 
-  _paintEntity() {
-    const st = this._entityState();
-    if (st && Array.isArray(st.attributes.aircraft) && !this._busy) {
-      this._paint({ ac: st.attributes.aircraft.map(slim).filter(Boolean), source: "ha" });
-    }
-  }
-
   async _fetch() {
     if (this._gone || this._paused || this._busy || !this._map) return;
     this._busy = true;
@@ -1153,7 +1261,7 @@ class AdsbGlobeCard extends HTMLElement {
       if (this._hass && this._hass.callApi) {
         data = await Promise.race([
           this._hass.callApi("GET", `adsb_globe/aircraft?lat=${c.lat.toFixed(4)}&lon=${c.lng.toFixed(4)}&dist=${dist}`),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 7000)),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 3500)),
         ]);
       }
     } catch (err) {
@@ -1167,7 +1275,9 @@ class AdsbGlobeCard extends HTMLElement {
     }
     if (data && (data.ac || data.aircraft)) {
       const ac = (data.ac || data.aircraft).map(slim).filter(Boolean);
-      this._paint({ ac, source: data.source || "live" });
+      this._lastAc = ac;
+      this._lastSource = data.source || "live";
+      this._paint({ ac, source: this._lastSource });
     } else if (this._meta) {
       this._meta.textContent = "feed error";
       if (this._dot) this._dot.classList.add("off");
@@ -1176,7 +1286,7 @@ class AdsbGlobeCard extends HTMLElement {
   }
 
   _iconHtml(ac, sel) {
-    const size = sel ? 36 : 28;
+    const size = sel ? 44 : 36;
     const rot = ac.track || 0;
     const color = ["7500", "7600", "7700"].includes(ac.squawk) ? "#ef5350" : altColor(ac.alt);
     const label = this._labels || sel
@@ -1185,9 +1295,32 @@ class AdsbGlobeCard extends HTMLElement {
     return {
       size,
       html: `<div class="ac-marker" style="width:${size}px;height:${size}px;transform:rotate(${rot}deg)">
-        <svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="${PLANE_PATH}" fill="${color}" stroke="${sel ? "#fff" : "#111"}" stroke-width="0.6"/></svg>
+        <svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="${PLANE_PATH}" fill="${color}" stroke="${sel ? "#fff" : "rgba(0,0,0,.55)"}" stroke-width="0.8" paint-order="stroke"/></svg>
       </div>${label}`,
     };
+  }
+
+  _redrawIcons() {
+    if (!this._map || !window.L) return;
+    const L = window.L;
+    this._markers.forEach((mk, hex) => {
+      const ac = this._lastAc.find((a) => a.hex === hex);
+      if (!ac) return;
+      const sel = hex === this._selected;
+      const { size, html } = this._iconHtml(ac, sel);
+      mk.setIcon(L.divIcon({ className: "ac-icon", html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }));
+    });
+  }
+
+  _interpolate() {
+    if (!this._markers) return;
+    const now = performance.now();
+    this._interp.forEach((p, hex) => {
+      const mk = this._markers.get(hex);
+      if (!mk) return;
+      const k = Math.min(1, (now - p.t0) / POLL_MS);
+      mk.setLatLng([p.sLat + (p.tLat - p.sLat) * k, p.sLon + (p.tLon - p.sLon) * k]);
+    });
   }
 
   _paint(data) {
@@ -1198,18 +1331,23 @@ class AdsbGlobeCard extends HTMLElement {
       if (this._milOnly && !((a.dbFlags || 0) & 1)) return false;
       return Number.isFinite(a.lat) && Number.isFinite(a.lon);
     });
-    if (this._meta) this._meta.textContent = `${list.length} in view · ${data.source || "live"}`;
+    if (this._meta) this._meta.textContent = `${list.length} · ${data.source || "live"}`;
     if (this._dot) this._dot.classList.remove("off");
     this._runAlerts(list);
 
     const keep = new Set();
+    const now = performance.now();
     list.forEach((ac) => {
       keep.add(ac.hex);
       const sel = ac.hex === this._selected;
       const { size, html } = this._iconHtml(ac, sel);
       const existing = this._markers.get(ac.hex);
+      const prev = this._interp.get(ac.hex);
       if (existing) {
-        existing.setLatLng([ac.lat, ac.lon]);
+        const cur = existing.getLatLng();
+        this._interp.set(ac.hex, {
+          sLat: cur.lat, sLon: cur.lng, tLat: ac.lat, tLon: ac.lon, t0: now,
+        });
         const el = existing.getElement();
         const mk = el && el.querySelector(".ac-marker");
         if (mk) mk.style.transform = `rotate(${ac.track || 0}deg)`;
@@ -1222,9 +1360,11 @@ class AdsbGlobeCard extends HTMLElement {
         }).addTo(this._map);
         marker.on("click", () => {
           this._selected = this._selected === ac.hex ? null : ac.hex;
+          this._redrawIcons();
           this._info(ac);
         });
         this._markers.set(ac.hex, marker);
+        this._interp.set(ac.hex, { sLat: ac.lat, sLon: ac.lon, tLat: ac.lat, tLon: ac.lon, t0: now });
       }
       if (this._tracks && sel) {
         const trail = this._trails[ac.hex] || [];
@@ -1240,6 +1380,7 @@ class AdsbGlobeCard extends HTMLElement {
       if (!keep.has(hex)) {
         this._map.removeLayer(mk);
         this._markers.delete(hex);
+        this._interp.delete(hex);
       }
     }
     if (this._line) {
@@ -1252,27 +1393,34 @@ class AdsbGlobeCard extends HTMLElement {
     if (this._selected) {
       const ac = list.find((a) => a.hex === this._selected);
       if (ac) this._info(ac);
+      else this._info(null);
     }
   }
 
   _info(ac) {
     let box = this._$(".info");
-    if (!this._selected) {
+    if (!this._selected || !ac) {
       if (box) box.remove();
       return;
     }
     if (!box) {
       box = document.createElement("div");
       box.className = "info";
-      const wrap = this._$(".map-wrap");
+      const wrap = this._$(".wrap");
       if (wrap) wrap.appendChild(box);
     }
     const alt = ac.alt === "ground" ? "ground" : ac.alt != null ? `${Math.round(ac.alt)} ft` : "n/a";
     const spd = ac.gs != null ? `${Math.round(ac.gs)} kt` : "n/a";
-    box.innerHTML = `<div class="cs">${callsign(ac)}</div>
+    box.innerHTML = `<button type="button" class="close">✕</button>
+      <div class="cs">${callsign(ac)}</div>
       <div>${ac.t || "type ?"} · ${ac.r || ac.hex}</div>
       <div>${alt} · ${spd} · ${ac.track != null ? Math.round(ac.track) + "°" : ""}</div>
-      <div>sqk ${ac.squawk || "—"} · ${classify(ac).join(", ") || "civil"}</div>`;
+      <div class="sub">sqk ${ac.squawk || "—"} · ${classify(ac).join(", ") || "civil"}</div>`;
+    box.querySelector(".close").addEventListener("click", () => {
+      this._selected = null;
+      this._redrawIcons();
+      box.remove();
+    });
   }
 
   _runAlerts(list) {
