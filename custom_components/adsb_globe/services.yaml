@@ -1,10 +1,10 @@
 set_options:
   name: Set options
-  description: Update alert radius and notification switch
+  description: Update alert radius, notifications and alert rules
   fields:
     radius_nm:
       name: Alert radius
-      description: Nautical miles from home
+      description: Default nautical miles from home
       selector:
         number:
           min: 5
@@ -12,6 +12,9 @@ set_options:
           unit_of_measurement: NM
     notify:
       name: Notifications
-      description: Notify when alert types enter the radius
+      description: Master switch for persistent notifications
       selector:
         boolean:
+    rules:
+      name: Alert rules
+      description: JSON list of alert rules (match, radius, ring, message)

@@ -21,9 +21,33 @@ CONF_FEEDER_URL = "feeder_url"
 CONF_ALERT_RADIUS = "alert_radius_nm"
 CONF_NAME = "name"
 CONF_NOTIFY = "notify"
+CONF_ALERT_RULES = "alert_rules"
 
 DEFAULT_ALERT_RADIUS = 15
 DEFAULT_SCAN_INTERVAL = 2
+
+DEFAULT_ALERT_RULES = [
+    {
+        "id": "mil",
+        "enabled": True,
+        "match": "military",
+        "value": "",
+        "radius_nm": 15,
+        "show_ring": True,
+        "notify": True,
+        "message": "{callsign} ({type}) military {dist} NM",
+    },
+    {
+        "id": "heli",
+        "enabled": True,
+        "match": "helicopter",
+        "value": "",
+        "radius_nm": 15,
+        "show_ring": True,
+        "notify": True,
+        "message": "{callsign} ({type}) helicopter {dist} NM",
+    },
+]
 
 EVENT_ENTRY = f"{DOMAIN}_entry"
 EVENT_EXIT = f"{DOMAIN}_exit"

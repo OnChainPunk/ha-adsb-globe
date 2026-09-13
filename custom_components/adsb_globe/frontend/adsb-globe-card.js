@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.2.0";
+const CARD_VERSION = "1.3.0";
 const POLL_MS = 1000;
 const MAX_DIST = 250;
 const MAX_TRAIL = 64;
@@ -718,6 +718,96 @@ function classify(ac) {
   return kinds;
 }
 
+const CAT = { A0: "N/A", A1: "Light", A2: "Small", A3: "Large", A4: "High vortex", A5: "Heavy", A6: "High perf", A7: "Rotorcraft" };
+const CAT_LB = {
+  A0: "N/A",
+  A1: "Light (<15 500 lb)",
+  A2: "Small (15 500 to 75 000 lb)",
+  A3: "Large (75 000 to 300 000 lb)",
+  A4: "High vortex large",
+  A5: "Heavy (>300 000 lb)",
+  A6: "High performance",
+  A7: "Rotorcraft",
+};
+const NACP = { 0: "≥ 18.52 km", 1: "< 18.52 km", 2: "< 7.4 km", 3: "< 3.7 km", 4: "< 1.85 km", 5: "< 926 m", 6: "< 555 m", 7: "< 185 m", 8: "< 92 m", 9: "< 30 m", 10: "< 10 m", 11: "< 3 m" };
+const NACV = { 0: "unknown", 1: "< 10 m/s", 2: "< 3 m/s", 3: "< 1 m/s", 4: "< 0.3 m/s" };
+const SIL = { 0: "unknown", 1: "≤ 1e-3", 2: "≤ 1e-5", 3: "≤ 1e-7" };
+const ADSB_VER = { 0: "v0 (DO-260)", 1: "v1 (DO-260A)", 2: "v2 (DO-260B)" };
+const RULE_MATCHES = [
+  ["military", "All military"],
+  ["helicopter", "All helicopters"],
+  ["chinook", "Chinook"],
+  ["apache", "Apache"],
+  ["blackhawk", "Black Hawk"],
+  ["fighter", "Fighter"],
+  ["police", "Police"],
+  ["emergency", "Emergency"],
+  ["type", "Type"],
+  ["reg", "Registration"],
+];
+const DEFAULT_RULES = [
+  { id: "mil", enabled: true, match: "military", value: "", radius_nm: 15, show_ring: true, notify: true, message: "{callsign} ({type}) military {dist} NM" },
+  { id: "heli", enabled: true, match: "helicopter", value: "", radius_nm: 15, show_ring: true, notify: true, message: "{callsign} ({type}) helicopter {dist} NM" },
+];
+const RING_COLORS = ["#ffa726", "#29b6f6", "#66bb6a", "#ab47bc", "#ef5350", "#26c6da", "#ffee58"];
+
+function fmt(v, digits, suffix) {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v) + (suffix || "");
+  return (digits == null ? String(n) : n.toFixed(digits)) + (suffix || "");
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => {
+    if (c === "&") return "&" + "amp;";
+    if (c === "<") return "&" + "lt;";
+    if (c === ">") return "&" + "gt;";
+    if (c === '"') return "&" + "quot;";
+    return "&#39;";
+  });
+}
+
+function normId(s) {
+  return String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function matchRule(ac, rule) {
+  if (!rule || rule.enabled === false) return false;
+  const value = String(rule.value || "").trim().toUpperCase();
+  const kinds = classify(ac);
+  if (rule.match === "type") {
+    if (!value) return false;
+    const t = (ac.t || "").toUpperCase();
+    const desc = (ac.desc || "").toUpperCase();
+    const want = normId(value);
+    return t === value || desc.includes(value) || (!!want && (normId(t) === want || normId(desc).includes(want)));
+  }
+  if (rule.match === "reg") {
+    const reg = normId(ac.r);
+    const want = normId(value);
+    return !!want && (reg === want || reg.startsWith(want));
+  }
+  return kinds.includes(rule.match);
+}
+
+function formatAlert(template, ac, rule, dist) {
+  const text = template || "{callsign} ({type}) {match} {dist} NM";
+  return text
+    .replaceAll("{callsign}", callsign(ac))
+    .replaceAll("{type}", ac.t || "?")
+    .replaceAll("{reg}", ac.r || "")
+    .replaceAll("{hex}", ac.hex || "")
+    .replaceAll("{dist}", Number(dist).toFixed(1))
+    .replaceAll("{match}", rule.match || "alert")
+    .replaceAll("{alt}", ac.alt == null ? "" : String(ac.alt))
+    .replaceAll("{value}", rule.value || "");
+}
+
+function newRuleId() {
+  return "r" + Math.random().toString(36).slice(2, 8);
+}
+
 function slim(raw) {
   if (!raw) return null;
   const hex = String(raw.hex || "").toLowerCase();
@@ -730,17 +820,46 @@ function slim(raw) {
     flight: String(raw.flight || "").trim(),
     r: String(raw.r || "").trim(),
     t: String(raw.t || "").trim(),
+    desc: String(raw.desc || "").trim(),
+    ownOp: String(raw.ownOp || "").trim(),
     alt: alt === "ground" ? "ground" : (typeof alt === "number" ? alt : null),
+    alt_geom: raw.alt_geom,
     gs: raw.gs,
+    tas: raw.tas,
+    ias: raw.ias,
+    mach: raw.mach,
     track: raw.track,
+    mag_heading: raw.mag_heading,
+    true_heading: raw.true_heading,
+    track_rate: raw.track_rate,
+    roll: raw.roll,
+    baro_rate: raw.baro_rate,
+    geom_rate: raw.geom_rate,
     squawk: String(raw.squawk || "").trim(),
     category: raw.category || "",
     lat,
     lon,
     seen: raw.seen || 0,
+    seen_pos: raw.seen_pos,
+    rssi: raw.rssi,
+    messages: raw.messages,
     dbFlags: raw.dbFlags || 0,
     emergency: raw.emergency && raw.emergency !== "none" ? raw.emergency : "",
     dst: raw.dst,
+    nav_qnh: raw.nav_qnh,
+    nav_altitude_mcp: raw.nav_altitude_mcp,
+    nav_heading: raw.nav_heading,
+    wd: raw.wd,
+    ws: raw.ws,
+    oat: raw.oat,
+    tat: raw.tat,
+    nac_p: raw.nac_p,
+    nac_v: raw.nac_v,
+    sil: raw.sil,
+    nic_baro: raw.nic_baro,
+    rc: raw.rc,
+    version: raw.version,
+    source: raw.source || (raw.mlat && raw.mlat.length ? "MLAT" : "ADS-B"),
   };
 }
 
@@ -811,6 +930,7 @@ class AdsbGlobeCard extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    this._hydrateRules();
     if (!this.shadowRoot) return;
     if (!this._map) this._ensureMap();
   }
@@ -924,7 +1044,8 @@ class AdsbGlobeCard extends HTMLElement {
 
       .settings {
         display: none; position: absolute; right: 54px; top: 10px; z-index: 1400;
-        width: 250px; background: rgba(12,16,22,.94); color: #e8eef4;
+        width: min(300px, calc(100% - 70px)); max-height: calc(100% - 24px); overflow: auto;
+        background: rgba(12,16,22,.96); color: #e8eef4;
         border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 12px; font-size: 13px;
         box-shadow: 0 8px 24px rgba(0,0,0,.45);
       }
@@ -933,17 +1054,7 @@ class AdsbGlobeCard extends HTMLElement {
       .settings label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
       .settings input[type=range] { width: 120px; }
       .settings .hint { color: #90a4ae; font-size: 11px; }
-
-      .info {
-        position: absolute; left: 10px; top: 48px; z-index: 1400;
-        background: rgba(12,16,22,.92); color: #e8eef4;
-        border: 1px solid rgba(255,255,255,.08); border-radius: 10px;
-        padding: 10px 12px; min-width: 180px; font: 12px/1.45 ui-sans-serif, system-ui;
-        box-shadow: 0 8px 24px rgba(0,0,0,.4);
-      }
-      .info .cs { font-weight: 700; font-size: 15px; letter-spacing: .02em; }
-      .info .sub { color: #90a4ae; }
-      .info button.close { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: #90a4ae; cursor: pointer; font-size: 14px; }
+      .settings .sec { margin: 12px 0 4px; font-size: 10px; letter-spacing: .08em; color: #90a4ae; text-transform: uppercase; }
 
       .ac-marker { display: flex; align-items: center; justify-content: center; transform-origin: center; }
       .ac-label {
@@ -951,6 +1062,59 @@ class AdsbGlobeCard extends HTMLElement {
         font: 700 10px/1.2 ui-monospace, monospace; color: #fff;
         text-shadow: 0 1px 2px #000, 0 0 6px #000; white-space: nowrap; text-align: center; pointer-events: none;
       }
+
+      .hover {
+        display: none; position: absolute; z-index: 1600; min-width: 210px;
+        background: rgba(20,24,28,.94); color: #e8eef4; border-radius: 8px;
+        padding: 10px 12px; font: 12px/1.45 ui-sans-serif, system-ui;
+        box-shadow: 0 8px 24px rgba(0,0,0,.45); pointer-events: none;
+      }
+      .hover.open { display: block; }
+      .hover .cs { font: 700 16px/1.2 ui-sans-serif, system-ui; letter-spacing: .04em; }
+      .hover .hex { color: #b0bec5; margin-bottom: 8px; }
+      .hover .row { display: flex; justify-content: space-between; gap: 16px; }
+      .hover .k { color: #90a4ae; }
+      .panel {
+        display: none; position: absolute; left: 10px; top: 10px; z-index: 1500;
+        width: min(280px, calc(100% - 70px)); max-height: calc(100% - 20px); overflow: auto;
+        background: rgba(16,20,24,.94); color: #e8eef4; border-radius: 10px;
+        box-shadow: 0 12px 32px rgba(0,0,0,.5);
+      }
+      .panel.open { display: block; }
+      .panel .photo { width: 100%; max-height: 140px; object-fit: cover; display: block; background: #111; }
+      .panel .cred { font-size: 10px; color: #90a4ae; padding: 4px 12px 0; }
+      .panel .body { padding: 10px 12px 16px; }
+      .panel .cs { font: 700 18px/1.2 ui-sans-serif, system-ui; }
+      .panel .hex { color: #90a4ae; margin-bottom: 8px; }
+      .panel .row { display: flex; justify-content: space-between; gap: 12px; margin: 3px 0; font-size: 12px; }
+      .panel .k { color: #90a4ae; }
+      .panel h4 {
+        margin: 10px -12px 6px; padding: 4px 12px; font-size: 11px; letter-spacing: .08em;
+        background: #1c4a52; color: #d4f3f6; font-weight: 700;
+      }
+      .panel .x {
+        position: sticky; top: 6px; float: right; margin: 6px 8px 0 0; z-index: 2;
+        border: 0; background: rgba(0,0,0,.4); color: #fff; width: 24px; height: 24px;
+        border-radius: 50%; cursor: pointer;
+      }
+      .rule {
+        border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 8px; margin: 8px 0;
+        background: rgba(255,255,255,.03);
+      }
+      .rule .top { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+      .rule select, .rule input[type=text], .rule input[type=number] {
+        background: #0d1117; color: #e8eef4; border: 1px solid rgba(255,255,255,.12);
+        border-radius: 6px; padding: 4px 6px; font: 12px ui-sans-serif, system-ui; width: 100%;
+      }
+      .rule .rm { background: none; border: 0; color: #ef9a9a; cursor: pointer; font-size: 16px; }
+      .add-rule, .chips button {
+        border: 0; border-radius: 6px; background: #29b6f6; color: #08202c;
+        font: 650 12px ui-sans-serif, system-ui; padding: 6px 10px; cursor: pointer;
+      }
+      .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 8px; }
+      .chips button { background: rgba(255,255,255,.08); color: #e8eef4; padding: 4px 8px; }
+      .chips button.on { background: #29b6f6; color: #08202c; }
+      .chips .empty { color: #90a4ae; font-size: 11px; padding: 2px 0; }
       .home-pin { width: 10px; height: 10px; border-radius: 50%; background: #29b6f6; border: 2px solid #fff; box-shadow: 0 0 0 1px #29b6f6; }
     `;
   }
@@ -970,7 +1134,6 @@ class AdsbGlobeCard extends HTMLElement {
           </div>
           <div class="rail">
             <button type="button" data-act="labels" title="Labels">L</button>
-            <button type="button" data-act="trail" title="Selected trail">T</button>
             <button type="button" data-act="ground" title="Ground traffic">G</button>
             <button type="button" data-act="military" title="Military only">M</button>
             <button type="button" data-act="pause" title="Pause">P</button>
@@ -983,18 +1146,20 @@ class AdsbGlobeCard extends HTMLElement {
           <div class="layers"></div>
           <div class="nm">— NM</div>
           <div class="altbar"><span class="l">0</span><span class="m">20k</span><span class="r">40,000 ft</span></div>
+          <div class="hover"></div>
+          <div class="panel"></div>
           <div class="settings">
-            <h3>Settings</h3>
-            <label>Alert range <span class="range-val">15</span> NM
-              <input type="range" class="range" min="5" max="80" step="1" value="15">
-            </label>
-            <label>Notifications
+            <h3>Alerts</h3>
+            <label>Master notifications
               <input type="checkbox" class="notify" checked>
             </label>
-            <label>Range rings
-              <input type="checkbox" class="rings" checked>
-            </label>
-            <div class="hint">Range and notifications save to the integration.</div>
+            <div class="hint">One rule per group, type or tail — each with its own radius, ring and message.</div>
+            <div class="sec">Nearby military & helicopters</div>
+            <div class="chips"></div>
+            <div class="sec">Rules</div>
+            <div class="rules"></div>
+            <button type="button" class="add-rule">+ Add alert</button>
+            <div class="hint" style="margin-top:8px">{callsign} {type} {reg} {hex} {dist} {match} {alt}</div>
           </div>
         </div>
       </ha-card>
@@ -1005,16 +1170,19 @@ class AdsbGlobeCard extends HTMLElement {
     this._settingsEl = this._$(".settings");
     this._nmEl = this._$(".nm");
     this._labels = this._config.show_labels === true;
-    this._tracks = this._config.show_trails !== false;
+    this._tracks = true;
     this._ground = !!this._config.show_ground;
     this._milOnly = false;
     this._paused = false;
     this._mapId = this._config.map && MAPS[this._config.map] ? this._config.map : "dark";
     this._lastAc = [];
     this._interp = new Map();
+    this._rules = (this._config.alert && this._config.alert.rules) || DEFAULT_RULES.map((r) => ({ ...r }));
     this._bindChrome();
     this._renderLayers();
     this._syncRail();
+    this._hydrateRules();
+    this._renderRules();
   }
 
   _bindChrome() {
@@ -1024,7 +1192,6 @@ class AdsbGlobeCard extends HTMLElement {
       if (!b) return;
       const act = b.dataset.act;
       if (act === "labels") { this._labels = !this._labels; this._redrawIcons(); }
-      else if (act === "trail") { this._tracks = !this._tracks; if (!this._tracks && this._line && this._map) { this._map.removeLayer(this._line); this._line = null; } }
       else if (act === "ground") { this._ground = !this._ground; this._paint({ ac: this._lastAc, source: this._lastSource || "live" }); }
       else if (act === "military") { this._milOnly = !this._milOnly; this._paint({ ac: this._lastAc, source: this._lastSource || "live" }); }
       else if (act === "pause") {
@@ -1045,13 +1212,20 @@ class AdsbGlobeCard extends HTMLElement {
       if (b.dataset.act === "out") this._map.zoomOut();
     });
     this._bindSettings();
+    const panel = this._$(".panel");
+    if (panel) {
+      panel.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (ev.target.closest(".x")) this._closeSelected();
+      });
+    }
+    if (this._settingsEl) this._settingsEl.addEventListener("click", (ev) => ev.stopPropagation());
   }
 
   _syncRail() {
     const rail = this._$(".rail");
     if (!rail) return;
     rail.querySelector('[data-act="labels"]').classList.toggle("on", this._labels);
-    rail.querySelector('[data-act="trail"]').classList.toggle("on", this._tracks);
     rail.querySelector('[data-act="ground"]').classList.toggle("on", this._ground);
     rail.querySelector('[data-act="military"]').classList.toggle("on", this._milOnly);
     rail.querySelector('[data-act="pause"]').classList.toggle("on", this._paused);
@@ -1075,38 +1249,165 @@ class AdsbGlobeCard extends HTMLElement {
     });
   }
 
+  _hydrateRules() {
+    if (this._rulesHydrated) return;
+    const st = this._entityState();
+    if (!st) return;
+    this._rulesHydrated = true;
+    const rules = st.attributes && st.attributes.alert_rules;
+    if (Array.isArray(rules) && rules.length) {
+      this._rules = rules.map((r) => ({ ...r }));
+      if (this._map) this._drawRings();
+      if (this._$(".rules")) this._renderRules();
+    }
+  }
+
   _bindSettings() {
     const panel = this._settingsEl;
     if (!panel) return;
-    const range = panel.querySelector(".range");
-    const rangeVal = panel.querySelector(".range-val");
     const notify = panel.querySelector(".notify");
-    const rings = panel.querySelector(".rings");
-    range.addEventListener("input", () => { rangeVal.textContent = range.value; });
-    const save = () => {
-      const radius = Number(range.value);
-      this._config.alert = { ...(this._config.alert || {}), radius_nm: radius, enabled: notify.checked };
-      this._config.show_range_rings = rings.checked;
-      this._drawRings();
-      if (this._hass && this._hass.callService) {
-        this._hass.callService("adsb_globe", "set_options", { radius_nm: radius, notify: notify.checked });
-      }
-    };
-    range.addEventListener("change", save);
-    notify.addEventListener("change", save);
-    rings.addEventListener("change", () => {
-      this._config.show_range_rings = rings.checked;
-      this._drawRings();
+    notify.addEventListener("change", () => this._saveRules());
+    panel.querySelector(".add-rule").addEventListener("click", () => {
+      this._addRule({ match: "type", value: "", radius_nm: 20, message: "{callsign} ({type}/{reg}) {dist} NM" });
     });
   }
 
   _syncSettings() {
     const panel = this._settingsEl;
     if (!panel) return;
-    panel.querySelector(".range").value = String(this._radiusNm());
-    panel.querySelector(".range-val").textContent = String(this._radiusNm());
     panel.querySelector(".notify").checked = this._notifyOn();
-    panel.querySelector(".rings").checked = this._config.show_range_rings !== false;
+    this._renderRules();
+    this._renderChips();
+  }
+
+  _hasRule(match, value) {
+    const want = normId(value);
+    if (match === "type" || match === "reg") {
+      if (!want) return false;
+      return (this._rules || []).some((r) => r.match === match && normId(r.value) === want);
+    }
+    return (this._rules || []).some((r) => r.match === match && !r.value);
+  }
+
+  _addRule(partial) {
+    const rule = {
+      id: newRuleId(),
+      enabled: true,
+      match: "type",
+      value: "",
+      radius_nm: 20,
+      show_ring: true,
+      notify: true,
+      message: "{callsign} ({type}/{reg}) {dist} NM",
+      ...partial,
+    };
+    if (this._hasRule(rule.match, rule.value)) return;
+    this._rules.push(rule);
+    this._renderRules();
+    this._saveRules();
+  }
+
+  _renderChips() {
+    const el = this._$(".chips");
+    if (!el) return;
+    el.innerHTML = "";
+    const seen = new Set();
+    const nearby = [];
+    (this._lastAc || []).forEach((ac) => {
+      const kinds = classify(ac);
+      if (!(kinds.includes("military") || kinds.includes("helicopter"))) return;
+      const key = (ac.t || ac.r || ac.hex).toUpperCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      nearby.push(ac);
+    });
+    if (!nearby.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "None in view — add a type or registration below.";
+      el.appendChild(empty);
+      return;
+    }
+    nearby.forEach((ac) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = [ac.t, ac.r].filter(Boolean).join(" · ") || ac.hex;
+      const match = ac.t ? "type" : "reg";
+      const value = ac.t || ac.r;
+      if (this._hasRule(match, value)) b.classList.add("on");
+      b.title = ac.desc ? `${ac.desc}${ac.r ? " · " + ac.r : ""}` : "Watch this type";
+      b.addEventListener("click", () => {
+        this._addRule({
+          match,
+          value,
+          radius_nm: 20,
+          message: "{callsign} ({type}/{reg}) {dist} NM",
+        });
+        this._renderChips();
+      });
+      el.appendChild(b);
+    });
+  }
+
+  _renderRules() {
+    const box = this._$(".rules");
+    if (!box) return;
+    box.innerHTML = "";
+    this._rules.forEach((rule, idx) => {
+      const div = document.createElement("div");
+      div.className = "rule";
+      const opts = RULE_MATCHES.map(([id, label]) => `<option value="${id}" ${rule.match === id ? "selected" : ""}>${label}</option>`).join("");
+      const needsVal = rule.match === "type" || rule.match === "reg";
+      const ph = rule.match === "reg" ? "G-XXXX / EI-IHK" : "B38M / 737 MAX 8 / PC-24";
+      div.innerHTML = `
+        <div class="top">
+          <input type="checkbox" class="en" ${rule.enabled !== false ? "checked" : ""}>
+          <select class="match">${opts}</select>
+          <button type="button" class="rm" title="Remove">×</button>
+        </div>
+        <input type="text" class="val" placeholder="${ph}" style="${needsVal ? "" : "display:none"}">
+        <label>Radius <span class="rval">${rule.radius_nm}</span> NM <input type="range" class="rad" min="5" max="80" value="${rule.radius_nm || 15}"></label>
+        <label>Show ring <input type="checkbox" class="ring" ${rule.show_ring ? "checked" : ""}></label>
+        <label>Notify <input type="checkbox" class="note" ${rule.notify !== false ? "checked" : ""}></label>
+        <input type="text" class="msg" placeholder="{callsign} ({type}) {dist} NM">
+      `;
+      div.querySelector(".val").value = rule.value || "";
+      div.querySelector(".msg").value = rule.message || "";
+      const sync = () => {
+        rule.enabled = div.querySelector(".en").checked;
+        rule.match = div.querySelector(".match").value;
+        rule.value = div.querySelector(".val").value;
+        rule.radius_nm = Number(div.querySelector(".rad").value);
+        rule.show_ring = div.querySelector(".ring").checked;
+        rule.notify = div.querySelector(".note").checked;
+        rule.message = div.querySelector(".msg").value;
+        div.querySelector(".rval").textContent = String(rule.radius_nm);
+        const show = rule.match === "type" || rule.match === "reg";
+        div.querySelector(".val").style.display = show ? "" : "none";
+        div.querySelector(".val").placeholder = rule.match === "reg" ? "G-XXXX / EI-IHK" : "B38M / 737 MAX 8 / PC-24";
+        this._drawRings();
+      };
+      div.querySelectorAll("input, select").forEach((n) => {
+        n.addEventListener("input", sync);
+        n.addEventListener("change", () => { sync(); this._saveRules(); });
+      });
+      div.querySelector(".rm").addEventListener("click", () => {
+        this._rules.splice(idx, 1);
+        this._renderRules();
+        this._saveRules();
+      });
+      box.appendChild(div);
+    });
+  }
+
+  _saveRules() {
+    this._rulesHydrated = true;
+    const notify = !!(this._$(".notify") && this._$(".notify").checked);
+    this._config.alert = { ...(this._config.alert || {}), enabled: notify, rules: this._rules };
+    this._drawRings();
+    if (this._hass && this._hass.callService) {
+      this._hass.callService("adsb_globe", "set_options", { notify, rules: JSON.stringify(this._rules) });
+    }
   }
 
   _waitForSize(el) {
@@ -1147,12 +1448,11 @@ class AdsbGlobeCard extends HTMLElement {
     this._markers = new Map();
     this._trails = {};
     this._selected = null;
-    this._alertInside = new Set();
-    this._alertPrimed = false;
     this._map.setView([home.lat, home.lon], 9);
     this._drawRings();
     this._map.on("moveend", () => { this._updateScale(); this._fetch(); });
     this._map.on("zoomend", () => this._updateScale());
+    this._map.on("click", () => { this._hideHover(); this._closeSelected(); });
     const wrap = this._$(".wrap");
     this._ro = new ResizeObserver(() => { if (this._map) this._map.invalidateSize(); });
     if (wrap) this._ro.observe(wrap);
@@ -1209,21 +1509,22 @@ class AdsbGlobeCard extends HTMLElement {
       interactive: false,
       icon: L.divIcon({ className: "ac-icon", html: '<div class="home-pin"></div>', iconSize: [12, 12], iconAnchor: [6, 6] }),
     }).addTo(this._rings);
-    if (this._config.show_range_rings !== false) {
-      [25, 50, 100].forEach((nm) => {
-        L.circle([home.lat, home.lon], { radius: nm * 1852, color: "#29b6f6", weight: 1, opacity: 0.35, fill: false, interactive: false }).addTo(this._rings);
-      });
-    }
-    L.circle([home.lat, home.lon], {
-      radius: this._radiusNm() * 1852,
-      color: "#ffa726",
-      weight: 2,
-      opacity: 0.85,
-      fillColor: "#ffa726",
-      fillOpacity: 0.07,
-      dashArray: "6 5",
-      interactive: false,
-    }).addTo(this._rings);
+    (this._rules || []).forEach((rule, i) => {
+      if (rule.enabled === false || !rule.show_ring) return;
+      const r = Number(rule.radius_nm) || 15;
+      const color = RING_COLORS[i % RING_COLORS.length];
+      const hot = (this._hotRules || new Set()).has(rule.id);
+      L.circle([home.lat, home.lon], {
+        radius: r * 1852,
+        color,
+        weight: hot ? 3 : 2,
+        opacity: hot ? 0.95 : 0.7,
+        fillColor: color,
+        fillOpacity: hot ? 0.12 : 0.05,
+        dashArray: hot ? null : "6 5",
+        interactive: false,
+      }).addTo(this._rings);
+    });
   }
 
   _viewDist() {
@@ -1290,7 +1591,7 @@ class AdsbGlobeCard extends HTMLElement {
     const rot = ac.track || 0;
     const color = ["7500", "7600", "7700"].includes(ac.squawk) ? "#ef5350" : altColor(ac.alt);
     const label = this._labels || sel
-      ? `<div class="ac-label">${callsign(ac)} ${ac.alt === "ground" ? "gnd" : (ac.alt != null ? Math.round(ac.alt) : "")}</div>`
+      ? `<div class="ac-label">${esc(callsign(ac))} ${ac.alt === "ground" ? "gnd" : (ac.alt != null ? Math.round(ac.alt) : "")}</div>`
       : "";
     return {
       size,
@@ -1342,7 +1643,6 @@ class AdsbGlobeCard extends HTMLElement {
       const sel = ac.hex === this._selected;
       const { size, html } = this._iconHtml(ac, sel);
       const existing = this._markers.get(ac.hex);
-      const prev = this._interp.get(ac.hex);
       if (existing) {
         const cur = existing.getLatLng();
         this._interp.set(ac.hex, {
@@ -1358,22 +1658,21 @@ class AdsbGlobeCard extends HTMLElement {
           icon: L.divIcon({ className: "ac-icon", html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }),
           riseOnHover: true,
         }).addTo(this._map);
-        marker.on("click", () => {
-          this._selected = this._selected === ac.hex ? null : ac.hex;
-          this._redrawIcons();
-          this._info(ac);
+        marker.on("click", (ev) => {
+          L.DomEvent.stopPropagation(ev);
+          this._openSelected(ac);
         });
+        marker.on("mouseover", (ev) => this._showHover(ac, ev));
+        marker.on("mouseout", () => this._hideHover());
         this._markers.set(ac.hex, marker);
         this._interp.set(ac.hex, { sLat: ac.lat, sLon: ac.lon, tLat: ac.lat, tLon: ac.lon, t0: now });
       }
-      if (this._tracks && sel) {
-        const trail = this._trails[ac.hex] || [];
-        const last = trail[trail.length - 1];
-        if (!last || haversineNm(last[0], last[1], ac.lat, ac.lon) > 0.02) {
-          trail.push([ac.lat, ac.lon]);
-          if (trail.length > MAX_TRAIL) trail.shift();
-          this._trails[ac.hex] = trail;
-        }
+      const trail = this._trails[ac.hex] || [];
+      const last = trail[trail.length - 1];
+      if (!last || haversineNm(last[0], last[1], ac.lat, ac.lon) > 0.03) {
+        trail.push([ac.lat, ac.lon]);
+        if (trail.length > 2500) trail.splice(0, trail.length - 2500);
+        this._trails[ac.hex] = trail;
       }
     });
     for (const [hex, mk] of this._markers) {
@@ -1383,65 +1682,233 @@ class AdsbGlobeCard extends HTMLElement {
         this._interp.delete(hex);
       }
     }
-    if (this._line) {
+    const trail = this._selected ? this._trails[this._selected] : null;
+    if (trail && trail.length >= 2) {
+      if (this._line) this._line.setLatLngs(trail);
+      else this._line = L.polyline(trail, { color: "#80deea", weight: 2.4, opacity: 0.95, interactive: false }).addTo(this._map);
+    } else if (this._line) {
       this._map.removeLayer(this._line);
       this._line = null;
     }
-    if (this._tracks && this._selected && this._trails[this._selected] && this._trails[this._selected].length >= 2) {
-      this._line = L.polyline(this._trails[this._selected], { color: "#80cbc4", weight: 2.2, opacity: 0.95, interactive: false }).addTo(this._map);
-    }
     if (this._selected) {
       const ac = list.find((a) => a.hex === this._selected);
-      if (ac) this._info(ac);
-      else this._info(null);
+      if (ac) {
+        if (this._panelHex === ac.hex) this._patchPanel(ac);
+        else this._fillPanel(ac);
+      } else this._closeSelected();
     }
   }
 
-  _info(ac) {
-    let box = this._$(".info");
-    if (!this._selected || !ac) {
-      if (box) box.remove();
-      return;
-    }
-    if (!box) {
-      box = document.createElement("div");
-      box.className = "info";
-      const wrap = this._$(".wrap");
-      if (wrap) wrap.appendChild(box);
-    }
+  _row(label, value, key) {
+    if (value == null || value === "") return "";
+    return `<div class="row"><span class="k">${label}</span><span${key ? ` data-k="${key}"` : ""}>${esc(value)}</span></div>`;
+  }
+
+  _showHover(ac, ev) {
+    if (this._selected === ac.hex) return;
+    const box = this._$(".hover");
+    if (!box) return;
     const alt = ac.alt === "ground" ? "ground" : ac.alt != null ? `${Math.round(ac.alt)} ft` : "n/a";
-    const spd = ac.gs != null ? `${Math.round(ac.gs)} kt` : "n/a";
-    box.innerHTML = `<button type="button" class="close">✕</button>
-      <div class="cs">${callsign(ac)}</div>
-      <div>${ac.t || "type ?"} · ${ac.r || ac.hex}</div>
-      <div>${alt} · ${spd} · ${ac.track != null ? Math.round(ac.track) + "°" : ""}</div>
-      <div class="sub">sqk ${ac.squawk || "—"} · ${classify(ac).join(", ") || "civil"}</div>`;
-    box.querySelector(".close").addEventListener("click", () => {
-      this._selected = null;
-      this._redrawIcons();
-      box.remove();
-    });
+    box.innerHTML = `<div class="cs">${esc(callsign(ac))}</div>
+      <div class="hex">${esc((ac.hex || "").toUpperCase())}</div>
+      ${this._row("Reg.:", ac.r || "—")}
+      ${this._row("Type code:", ac.t || "—")}
+      ${this._row("Altitude:", alt)}
+      ${this._row("Speed:", ac.gs != null ? `${Math.round(ac.gs)} kt` : "—")}
+      ${this._row("Source:", ac.source || "ADS-B")}
+      ${this._row("RSSI:", ac.rssi != null ? `${Number(ac.rssi).toFixed(1)} dBFS` : "—")}`;
+    const wrap = this._$(".wrap").getBoundingClientRect();
+    const pt = ev && ev.containerPoint ? ev.containerPoint : { x: 80, y: 80 };
+    box.style.left = Math.min(pt.x + 18, wrap.width - 230) + "px";
+    box.style.top = Math.min(pt.y + 8, wrap.height - 180) + "px";
+    box.classList.add("open");
+  }
+
+  _hideHover() {
+    const box = this._$(".hover");
+    if (box) box.classList.remove("open");
+  }
+
+  _openSelected(ac) {
+    this._hideHover();
+    this._selected = ac.hex;
+    this._redrawIcons();
+    this._fillPanel(ac);
+    this._loadExtras(ac);
+    if (this._line) { this._map.removeLayer(this._line); this._line = null; }
+    const trail = this._trails[ac.hex];
+    if (trail && trail.length >= 2) {
+      this._line = window.L.polyline(trail, { color: "#80deea", weight: 2.4, opacity: 0.95, interactive: false }).addTo(this._map);
+    }
+  }
+
+  _closeSelected() {
+    this._selected = null;
+    this._panelHex = null;
+    this._hideHover();
+    const panel = this._$(".panel");
+    if (panel) { panel.classList.remove("open"); panel.innerHTML = ""; }
+    if (this._line && this._map) { this._map.removeLayer(this._line); this._line = null; }
+    this._redrawIcons();
+  }
+
+  _sec(title, rows) {
+    const body = rows.filter(Boolean).join("");
+    if (!body) return "";
+    return `<h4>${title}</h4>${body}`;
+  }
+
+  _fillPanel(ac) {
+    const panel = this._$(".panel");
+    if (!panel) return;
+    const scroll = this._panelHex === ac.hex ? panel.scrollTop : 0;
+    const home = this._home();
+    const dist = haversineNm(home.lat, home.lon, ac.lat, ac.lon);
+    const photo = this._photos && this._photos[ac.hex];
+    const cat = CAT_LB[ac.category] || CAT[ac.category] || ac.category || "";
+    const nacp = ac.nac_p != null ? (NACP[ac.nac_p] ? `EPU ${NACP[ac.nac_p]}` : ac.nac_p) : null;
+    const nacv = ac.nac_v != null ? (NACV[ac.nac_v] || ac.nac_v) : null;
+    const sil = ac.sil != null ? (SIL[ac.sil] || ac.sil) : null;
+    const ver = ac.version != null ? (ADSB_VER[ac.version] || `v${ac.version}`) : null;
+    const nic = ac.nic_baro == null ? null : (Number(ac.nic_baro) ? "cross-checked" : "not cross-checked");
+    panel.innerHTML = `
+      <button type="button" class="x">✕</button>
+      ${photo && photo.src ? `<img class="photo" alt="" src="${esc(photo.src)}">${photo.photographer ? `<div class="cred">Image © ${esc(photo.photographer)}</div>` : ""}` : ""}
+      <div class="body">
+        <div class="cs">${esc(callsign(ac))}</div>
+        <div class="hex">${esc((ac.hex || "").toUpperCase())}</div>
+        ${this._row("Reg.:", ac.r || "—")}
+        ${this._row("Operator:", ac.ownOp || "")}
+        ${this._row("Type:", [ac.t, ac.desc].filter(Boolean).join(" · ") || "—")}
+        ${this._row("Squawk:", ac.squawk || "—", "sq")}
+        ${this._row("DB flags:", (ac.dbFlags || 0) & 1 ? "military" : "none")}
+        ${this._sec("SPATIAL", [
+          this._row("Groundspeed:", fmt(ac.gs, 0, " kt"), "gs"),
+          this._row("Baro. altitude:", ac.alt === "ground" ? "ground" : fmt(ac.alt, 0, " ft"), "alt"),
+          this._row("WGS84 altitude:", fmt(ac.alt_geom, 0, " ft"), "altg"),
+          this._row("Vert. Rate:", fmt(ac.baro_rate, 0, " ft/min"), "vs"),
+          this._row("Track:", fmt(ac.track, 1, "°"), "trk"),
+          this._row("Pos.:", `${ac.lat.toFixed(3)}, ${ac.lon.toFixed(3)}`, "pos"),
+          this._row("Distance:", `${dist.toFixed(1)} NM`, "dst"),
+        ])}
+        ${this._sec("SIGNAL", [
+          this._row("Source:", ac.source || "ADS-B"),
+          this._row("RSSI:", ac.rssi != null ? `${Number(ac.rssi).toFixed(1)} dBFS` : null, "rssi"),
+          this._row("Messages:", ac.messages),
+          this._row("Last Pos.:", fmt(ac.seen_pos, 1, " s"), "seenp"),
+          this._row("Last Seen:", fmt(ac.seen, 1, " s"), "seen"),
+        ])}
+        ${this._sec("FMS SEL", [
+          this._row("Sel. Alt.:", fmt(ac.nav_altitude_mcp, 0, " ft")),
+          this._row("Sel. Head.:", fmt(ac.nav_heading, 1, "°")),
+        ])}
+        ${this._sec("WIND", [
+          this._row("Speed:", fmt(ac.ws, 0, " kt")),
+          this._row("Direction (from):", fmt(ac.wd, 0, "°")),
+          this._row("TAT / OAT:", (ac.tat != null || ac.oat != null) ? `${ac.tat ?? "—"} / ${ac.oat ?? "—"} °C` : null),
+        ])}
+        ${this._sec("SPEED", [
+          this._row("Ground:", fmt(ac.gs, 0, " kt"), "gs2"),
+          this._row("True:", fmt(ac.tas, 0, " kt")),
+          this._row("Indicated:", fmt(ac.ias, 0, " kt")),
+          this._row("Mach:", fmt(ac.mach, 3, "")),
+        ])}
+        ${this._sec("ALTITUDE", [
+          this._row("Barometric:", ac.alt === "ground" ? "ground" : fmt(ac.alt, 0, " ft"), "alt2"),
+          this._row("Baro. Rate:", fmt(ac.baro_rate, 0, " ft/min"), "vs2"),
+          this._row("Geom. WGS84:", fmt(ac.alt_geom, 0, " ft"), "altg2"),
+          this._row("Geom. Rate:", fmt(ac.geom_rate, 0, " ft/min")),
+          this._row("QNH:", fmt(ac.nav_qnh, 1, " hPa")),
+        ])}
+        ${this._sec("DIRECTION", [
+          this._row("Ground Track:", fmt(ac.track, 1, "°"), "trk2"),
+          this._row("True Heading:", fmt(ac.true_heading, 1, "°")),
+          this._row("Magnetic Heading:", fmt(ac.mag_heading, 1, "°")),
+          this._row("Track Rate:", fmt(ac.track_rate, 2, "")),
+          this._row("Roll:", fmt(ac.roll, 1, "")),
+        ])}
+        ${this._sec("STUFF", [
+          this._row("Category:", cat),
+          this._row("ADS-B Ver.:", ver),
+          this._row("DB flags:", (ac.dbFlags || 0) & 1 ? "military" : "none"),
+        ])}
+        ${this._sec("ACCURACY", [
+          this._row("NACp:", nacp),
+          this._row("SIL:", sil),
+          this._row("NACv:", nacv),
+          this._row("NICBARO:", nic),
+          this._row("Rc:", ac.rc != null ? `${ac.rc} m` : null),
+        ])}
+      </div>`;
+    panel.classList.add("open");
+    this._panelHex = ac.hex;
+    panel.scrollTop = scroll;
+  }
+
+  _patchPanel(ac) {
+    const panel = this._$(".panel");
+    if (!panel || this._panelHex !== ac.hex) return;
+    const home = this._home();
+    const dist = haversineNm(home.lat, home.lon, ac.lat, ac.lon);
+    const set = (k, v) => {
+      const n = panel.querySelector(`[data-k="${k}"]`);
+      if (n && v != null && v !== "") n.textContent = v;
+    };
+    set("gs", fmt(ac.gs, 0, " kt"));
+    set("gs2", fmt(ac.gs, 0, " kt"));
+    set("alt", ac.alt === "ground" ? "ground" : fmt(ac.alt, 0, " ft"));
+    set("alt2", ac.alt === "ground" ? "ground" : fmt(ac.alt, 0, " ft"));
+    set("altg", fmt(ac.alt_geom, 0, " ft"));
+    set("altg2", fmt(ac.alt_geom, 0, " ft"));
+    set("vs", fmt(ac.baro_rate, 0, " ft/min"));
+    set("vs2", fmt(ac.baro_rate, 0, " ft/min"));
+    set("trk", fmt(ac.track, 1, "°"));
+    set("trk2", fmt(ac.track, 1, "°"));
+    set("pos", `${ac.lat.toFixed(3)}, ${ac.lon.toFixed(3)}`);
+    set("dst", `${dist.toFixed(1)} NM`);
+    set("rssi", ac.rssi != null ? `${Number(ac.rssi).toFixed(1)} dBFS` : null);
+    set("seen", fmt(ac.seen, 1, " s"));
+    set("seenp", fmt(ac.seen_pos, 1, " s"));
+    set("sq", ac.squawk || "—");
+  }
+
+  async _loadExtras(ac) {
+    if (!this._hass || !this._hass.callApi) return;
+    this._photos = this._photos || {};
+    try {
+      const photo = await this._hass.callApi("GET", `adsb_globe/photo?hex=${ac.hex}`);
+      if (photo && photo.photo) {
+        this._photos[ac.hex] = photo.photo;
+        if (this._selected === ac.hex) this._fillPanel(ac);
+      }
+    } catch (err) { /* ignore */ }
+    try {
+      const trace = await this._hass.callApi("GET", `adsb_globe/trace?hex=${ac.hex}`);
+      const pts = (trace && trace.points) || [];
+      if (pts.length >= 2) {
+        this._trails[ac.hex] = pts.map((p) => [p[0], p[1]]);
+        if (this._selected === ac.hex && this._map) {
+          if (this._line) this._map.removeLayer(this._line);
+          this._line = window.L.polyline(this._trails[ac.hex], { color: "#80deea", weight: 2.4, opacity: 0.95, interactive: false }).addTo(this._map);
+        }
+      }
+    } catch (err) { /* ignore */ }
   }
 
   _runAlerts(list) {
-    const al = this._config.alert;
-    if (!al || al.enabled === false || !this._notifyOn()) return;
     const home = this._home();
-    const r = this._radiusNm();
-    const want = new Set(al.on || []);
-    const inside = new Set();
-    for (const ac of list) {
-      const d = haversineNm(home.lat, home.lon, ac.lat, ac.lon);
-      if (d > r) continue;
-      inside.add(ac.hex);
-      if (!this._alertPrimed) continue;
-      if (this._alertInside.has(ac.hex)) continue;
-      const kinds = classify(ac).filter((k) => want.has(k));
-      if (!kinds.length) continue;
-      this.dispatchEvent(new CustomEvent("hass-notification", { bubbles: true, composed: true, detail: { message: `${callsign(ac)} ${kinds.join(", ")} ${d.toFixed(1)} NM` } }));
+    const hot = new Set();
+    for (const rule of (this._rules || [])) {
+      if (rule.enabled === false) continue;
+      const r = Number(rule.radius_nm) || 15;
+      for (const ac of list) {
+        if (!matchRule(ac, rule)) continue;
+        if (haversineNm(home.lat, home.lon, ac.lat, ac.lon) <= r) hot.add(rule.id);
+      }
     }
-    this._alertInside = inside;
-    this._alertPrimed = true;
+    const prevHot = this._hotRules || new Set();
+    this._hotRules = hot;
+    if ([...hot].join() !== [...prevHot].join()) this._drawRings();
   }
 }
 

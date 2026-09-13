@@ -6,7 +6,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import CONF_NOTIFY, DOMAIN
 from .coordinator import AdsbCoordinator
 
 
@@ -45,8 +45,9 @@ class AdsbInAreaSensor(CoordinatorEntity[AdsbCoordinator], SensorEntity):
             "latitude": data.get("lat"),
             "longitude": data.get("lon"),
             "radius_nm": data.get("radius"),
-            "notify": opts.get("notify", True),
+            "notify": opts.get(CONF_NOTIFY, True),
             "source": data.get("source"),
+            "alert_rules": data.get("rules") or [],
             "aircraft": data.get("ac") or [],
         }
 

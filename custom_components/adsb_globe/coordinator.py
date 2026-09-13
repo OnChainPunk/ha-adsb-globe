@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import json
 import logging
 from typing import Any
 
@@ -11,18 +12,32 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     CONF_ALERT_RADIUS,
+    CONF_ALERT_RULES,
     CONF_FEEDER_URL,
     CONF_NOTIFY,
     DEFAULT_ALERT_RADIUS,
+    DEFAULT_ALERT_RULES,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_ENTRY,
     EVENT_EXIT,
     MAX_SENSOR_AIRCRAFT,
 )
-from .feed import classify, haversine_nm, home_fix, pull_feeder, pull_public
+from .feed import classify, format_alert, haversine_nm, home_fix, match_rule, pull_feeder, pull_public
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _rules(opts: dict[str, Any]) -> list[dict[str, Any]]:
+    rules = opts.get(CONF_ALERT_RULES) or DEFAULT_ALERT_RULES
+    if isinstance(rules, str):
+        try:
+            rules = json.loads(rules)
+        except json.JSONDecodeError:
+            rules = DEFAULT_ALERT_RULES
+    if not isinstance(rules, list):
+        return list(DEFAULT_ALERT_RULES)
+    return rules
 
 
 class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -52,25 +67,19 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         opts = self._opts()
         lat, lon = self._home()
         radius = int(opts.get(CONF_ALERT_RADIUS, DEFAULT_ALERT_RADIUS))
+        rules = _rules(opts)
         feeder = (opts.get(CONF_FEEDER_URL) or "").strip()
         try:
             if feeder:
                 feed = await pull_feeder(self.hass, feeder)
             else:
-                feed = await pull_public(self.hass, lat, lon, max(radius * 3, 80))
+                max_r = max([radius] + [int(r.get("radius_nm") or radius) for r in rules] + [80])
+                feed = await pull_public(self.hass, lat, lon, max_r)
         except Exception as err:
             raise UpdateFailed(str(err)) from err
 
-        alerts: dict[str, list[dict[str, Any]]] = {
-            "military": [],
-            "helicopter": [],
-            "chinook": [],
-            "apache": [],
-            "blackhawk": [],
-            "police": [],
-            "fighter": [],
-            "emergency": [],
-        }
+        matched: dict[str, list[dict[str, Any]]] = {}
+        kinds: dict[str, list[dict[str, Any]]] = {}
         nearest = None
         nearest_d = 1e9
         airborne = 0
@@ -84,15 +93,21 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if d < nearest_d:
                 nearest_d = d
                 nearest = ac
-            if d > radius:
-                continue
-            for kind in classify(ac):
-                alerts[kind].append(ac)
+            if d <= radius:
+                for kind in classify(ac):
+                    kinds.setdefault(kind, []).append(ac)
+            for rule in rules:
+                rid = str(rule.get("id") or "")
+                if not rid or not match_rule(ac, rule):
+                    continue
+                r = float(rule.get("radius_nm") or radius)
+                if d <= r:
+                    matched.setdefault(rid, []).append(ac)
 
         if self._primed:
-            await self._notify_changes(alerts)
+            await self._notify_rules(rules, matched)
         else:
-            self._seen = {kind: {p["hex"] for p in planes} for kind, planes in alerts.items()}
+            self._seen = {rid: {p["hex"] for p in planes} for rid, planes in matched.items()}
             self._primed = True
 
         aircraft = sorted(feed["ac"], key=lambda a: a.get("dst") or 9e9)[:MAX_SENSOR_AIRCRAFT]
@@ -104,46 +119,49 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "airborne": airborne,
             "source": feed.get("source"),
             "nearest": nearest,
-            "alerts": alerts,
+            "alerts": kinds,
+            "rule_hits": {rid: [p["hex"] for p in planes] for rid, planes in matched.items()},
+            "rules": rules,
             "ac": aircraft,
         }
 
-    async def _notify_changes(self, alerts: dict[str, list[dict[str, Any]]]) -> None:
-        if self._opts().get(CONF_NOTIFY, True) is False:
-            self._seen = {kind: {p["hex"] for p in planes} for kind, planes in alerts.items()}
-            return
-        for kind, planes in alerts.items():
+    async def _notify_rules(self, rules: list[dict[str, Any]], matched: dict[str, list[dict[str, Any]]]) -> None:
+        master = self._opts().get(CONF_NOTIFY, True) is not False
+        for rule in rules:
+            rid = str(rule.get("id") or "")
+            planes = matched.get(rid, [])
             now = {p["hex"] for p in planes}
-            prev = self._seen.get(kind, set())
+            prev = self._seen.get(rid, set())
+            if not master or not rule.get("notify", True):
+                self._seen[rid] = now
+                continue
             entered = now - prev
             exited = prev - now
             by_hex = {p["hex"]: p for p in planes}
             for hex_id in entered:
                 ac = by_hex[hex_id]
-                label = ac.get("flight") or ac.get("r") or hex_id
-                typ = ac.get("t") or "?"
-                dst = ac.get("dst")
-                message = f"{label} ({typ}) — {kind} — {dst} NM from home"
+                dst = ac.get("dst") or 0
+                message = format_alert(str(rule.get("message") or ""), ac, rule, float(dst))
                 self.hass.bus.async_fire(
                     EVENT_ENTRY,
-                    {"kind": kind, "hex": hex_id, "callsign": label, "type": typ, "distance_nm": dst, "aircraft": ac},
+                    {"rule": rid, "kind": rule.get("match"), "hex": hex_id, "message": message, "aircraft": ac},
                 )
                 await self.hass.services.async_call(
                     "persistent_notification",
                     "create",
                     {
-                        "title": f"ADS-B: {kind}",
+                        "title": f"ADS-B: {rule.get('match') or 'alert'}",
                         "message": message,
-                        "notification_id": f"adsb_globe_{kind}_{hex_id}",
+                        "notification_id": f"adsb_globe_{rid}_{hex_id}",
                     },
                     blocking=False,
                 )
             for hex_id in exited:
-                self.hass.bus.async_fire(EVENT_EXIT, {"kind": kind, "hex": hex_id})
+                self.hass.bus.async_fire(EVENT_EXIT, {"rule": rid, "hex": hex_id})
                 await self.hass.services.async_call(
                     "persistent_notification",
                     "dismiss",
-                    {"notification_id": f"adsb_globe_{kind}_{hex_id}"},
+                    {"notification_id": f"adsb_globe_{rid}_{hex_id}"},
                     blocking=False,
                 )
-            self._seen[kind] = now
+            self._seen[rid] = now

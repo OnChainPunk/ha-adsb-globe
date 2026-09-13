@@ -3,15 +3,15 @@
     "step": {
       "user": {
         "title": "ADS-B Globe",
-        "description": "Defaults to your Home Assistant location. Leave feeder blank to use the public ADS-B network. Notifications fire when military / helicopter / Chinook / Apache / police / fighter / emergency aircraft enter the radius.",
+        "description": "Defaults to your Home Assistant location. Leave feeder blank to use the public ADS-B network. Alert rules (military, helicopters, type, registration) are edited on the card.",
         "data": {
           "name": "Name",
           "latitude": "Latitude",
           "longitude": "Longitude",
-          "alert_radius_nm": "Alert radius (nautical miles)",
+          "alert_radius_nm": "Default alert radius (nautical miles)",
           "scan_interval": "Update interval (seconds)",
           "feeder_url": "Local tar1090 URL (optional)",
-          "notify": "Create notifications when alert types enter the radius"
+          "notify": "Create notifications when alert rules match"
         }
       }
     },
@@ -27,10 +27,10 @@
           "name": "Name",
           "latitude": "Latitude",
           "longitude": "Longitude",
-          "alert_radius_nm": "Alert radius (nautical miles)",
+          "alert_radius_nm": "Default alert radius (nautical miles)",
           "scan_interval": "Update interval (seconds)",
           "feeder_url": "Local tar1090 URL (optional)",
-          "notify": "Create notifications when alert types enter the radius"
+          "notify": "Create notifications when alert rules match"
         }
       }
     }
