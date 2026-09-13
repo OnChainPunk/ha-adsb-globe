@@ -8,7 +8,7 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_ALERT_RADIUS, CONF_ALERT_RULES, CONF_NOTIFY, DOMAIN, PLATFORMS
+from .const import CONF_ALERT_RADIUS, CONF_ALERT_RULES, CONF_NOTIFY, CONF_PANEL_SIZE, DOMAIN, PLATFORMS
 from .coordinator import AdsbCoordinator
 from .frontend import JSModuleRegistration
 from .view import AdsbAircraftView, AdsbPhotoView, AdsbTraceView
@@ -72,6 +72,11 @@ async def _async_register_services(hass: HomeAssistant) -> None:
             opts[CONF_ALERT_RADIUS] = int(call.data["radius_nm"])
         if "notify" in call.data:
             opts[CONF_NOTIFY] = bool(call.data["notify"])
+        if "panel_size" in call.data:
+            try:
+                opts[CONF_PANEL_SIZE] = max(1, min(5, int(call.data["panel_size"])))
+            except (TypeError, ValueError):
+                pass
         if "rules" in call.data:
             rules = call.data["rules"]
             if isinstance(rules, str):

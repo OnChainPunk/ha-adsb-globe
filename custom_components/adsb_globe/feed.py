@@ -163,6 +163,11 @@ def format_alert(template: str, ac: dict[str, Any], rule: dict[str, Any], dist: 
         "{match}": str(rule.get("match") or "alert"),
         "{alt}": "" if ac.get("alt") is None else str(ac.get("alt")),
         "{value}": str(rule.get("value") or ""),
+        "{desc}": str(ac.get("desc") or ""),
+        "{operator}": str(ac.get("ownOp") or ""),
+        "{gs}": "" if ac.get("gs") is None else str(int(ac.get("gs"))),
+        "{squawk}": str(ac.get("squawk") or ""),
+        "{flight}": str(ac.get("flight") or label or ""),
     }
     for key, val in repl.items():
         text = text.replace(key, val)

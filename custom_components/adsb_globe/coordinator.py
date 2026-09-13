@@ -15,8 +15,10 @@ from .const import (
     CONF_ALERT_RULES,
     CONF_FEEDER_URL,
     CONF_NOTIFY,
+    CONF_PANEL_SIZE,
     DEFAULT_ALERT_RADIUS,
     DEFAULT_ALERT_RULES,
+    DEFAULT_PANEL_SIZE,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     EVENT_ENTRY,
@@ -115,6 +117,7 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "lat": lat,
             "lon": lon,
             "radius": radius,
+            "panel_size": int(opts.get(CONF_PANEL_SIZE, DEFAULT_PANEL_SIZE)),
             "count": len(feed["ac"]),
             "airborne": airborne,
             "source": feed.get("source"),
@@ -132,36 +135,87 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             planes = matched.get(rid, [])
             now = {p["hex"] for p in planes}
             prev = self._seen.get(rid, set())
-            if not master or not rule.get("notify", True):
-                self._seen[rid] = now
-                continue
             entered = now - prev
             exited = prev - now
             by_hex = {p["hex"]: p for p in planes}
             for hex_id in entered:
                 ac = by_hex[hex_id]
-                dst = ac.get("dst") or 0
-                message = format_alert(str(rule.get("message") or ""), ac, rule, float(dst))
+                dst = float(ac.get("dst") or 0)
+                message = format_alert(str(rule.get("message") or ""), ac, rule, dst)
+                title = format_alert(str(rule.get("title") or "ADS-B {match}"), ac, rule, dst)
                 self.hass.bus.async_fire(
                     EVENT_ENTRY,
-                    {"rule": rid, "kind": rule.get("match"), "hex": hex_id, "message": message, "aircraft": ac},
-                )
-                await self.hass.services.async_call(
-                    "persistent_notification",
-                    "create",
                     {
-                        "title": f"ADS-B: {rule.get('match') or 'alert'}",
+                        "rule": rid,
+                        "kind": rule.get("match"),
+                        "hex": hex_id,
+                        "title": title,
                         "message": message,
-                        "notification_id": f"adsb_globe_{rid}_{hex_id}",
+                        "aircraft": ac,
                     },
-                    blocking=False,
                 )
+                if master:
+                    await self._do_actions(rule, rid, hex_id, title, message)
             for hex_id in exited:
                 self.hass.bus.async_fire(EVENT_EXIT, {"rule": rid, "hex": hex_id})
+                if master and rule.get("notify", True):
+                    await self.hass.services.async_call(
+                        "persistent_notification",
+                        "dismiss",
+                        {"notification_id": f"adsb_globe_{rid}_{hex_id}"},
+                        blocking=False,
+                    )
+            self._seen[rid] = now
+
+    async def _do_actions(self, rule: dict[str, Any], rid: str, hex_id: str, title: str, message: str) -> None:
+        if rule.get("notify", True):
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": title,
+                    "message": message,
+                    "notification_id": f"adsb_globe_{rid}_{hex_id}",
+                },
+                blocking=False,
+            )
+        svc = str(rule.get("notify_service") or "").strip()
+        if svc:
+            domain, name = _split_service(svc)
+            if domain and name and self.hass.services.has_service(domain, name):
+                try:
+                    await self.hass.services.async_call(
+                        domain, name, {"title": title, "message": message}, blocking=False
+                    )
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.debug("notify %s.%s failed: %s", domain, name, err)
+        if not rule.get("tts"):
+            return
+        media = str(rule.get("tts_media") or "").strip()
+        if not media:
+            return
+        try:
+            if self.hass.services.has_service("tts", "speak"):
                 await self.hass.services.async_call(
-                    "persistent_notification",
-                    "dismiss",
-                    {"notification_id": f"adsb_globe_{rid}_{hex_id}"},
+                    "tts",
+                    "speak",
+                    {"media_player_entity_id": media, "message": message},
                     blocking=False,
                 )
-            self._seen[rid] = now
+            elif self.hass.services.has_service("tts", "google_translate_say"):
+                await self.hass.services.async_call(
+                    "tts",
+                    "google_translate_say",
+                    {"entity_id": media, "message": message},
+                    blocking=False,
+                )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("tts failed: %s", err)
+
+
+def _split_service(svc: str) -> tuple[str, str]:
+    raw = svc.strip().lstrip("/")
+    if "." in raw:
+        domain, name = raw.split(".", 1)
+        return domain, name
+    return "notify", raw

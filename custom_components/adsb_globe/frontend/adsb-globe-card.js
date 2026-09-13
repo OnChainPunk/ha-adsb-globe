@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.3.0";
+const CARD_VERSION = "1.4.0";
 const POLL_MS = 1000;
 const MAX_DIST = 250;
 const MAX_TRAIL = 64;
@@ -746,10 +746,30 @@ const RULE_MATCHES = [
   ["reg", "Registration"],
 ];
 const DEFAULT_RULES = [
-  { id: "mil", enabled: true, match: "military", value: "", radius_nm: 15, show_ring: true, notify: true, message: "{callsign} ({type}) military {dist} NM" },
-  { id: "heli", enabled: true, match: "helicopter", value: "", radius_nm: 15, show_ring: true, notify: true, message: "{callsign} ({type}) helicopter {dist} NM" },
+  { id: "mil", enabled: true, match: "military", value: "", radius_nm: 15, show_ring: true, notify: true, notify_service: "", tts: false, tts_media: "", title: "ADS-B {match}", message: "{callsign} ({type}) military {dist} NM" },
+  { id: "heli", enabled: true, match: "helicopter", value: "", radius_nm: 15, show_ring: true, notify: true, notify_service: "", tts: false, tts_media: "", title: "ADS-B {match}", message: "{callsign} ({type}) helicopter {dist} NM" },
 ];
 const RING_COLORS = ["#ffa726", "#29b6f6", "#66bb6a", "#ab47bc", "#ef5350", "#26c6da", "#ffee58"];
+const PANEL_STEPS = [
+  { w: 176, h: "30%", photo: 70 },
+  { w: 208, h: "38%", photo: 88 },
+  { w: 240, h: "48%", photo: 104 },
+  { w: 280, h: "64%", photo: 128 },
+  { w: 320, h: "82%", photo: 148 },
+];
+const MARKER_PATH = "/adsb_globe/tar1090-markers.json";
+const TYPE_ALIAS = {
+  AH64: "H64", AH64A: "H64", AH64D: "H64", AH64E: "H64",
+  CH47: "H47", CH47D: "H47", CH47F: "H47", MH47: "H47", MH47G: "H47",
+  UH60: "H60", UH60L: "H60", UH60M: "H60", HH60: "H60", SH60: "H60", S70: "H60", S70A: "H60", S70I: "H60",
+};
+const EXTRA_TYPES = {
+  PC12: ["jet_nonswept", 0.95], PC24: ["jet_nonswept", 0.96],
+  C172: ["cessna", 1], C152: ["cessna", 0.92], C182: ["cessna", 1],
+  EC35: ["dauphin", 0.95], EC45: ["dauphin", 1], A109: ["helicopter", 1], B06: ["helicopter", 0.9],
+};
+let MARKERS = null;
+let markersLoader = null;
 
 function fmt(v, digits, suffix) {
   if (v == null || v === "") return null;
@@ -801,7 +821,12 @@ function formatAlert(template, ac, rule, dist) {
     .replaceAll("{dist}", Number(dist).toFixed(1))
     .replaceAll("{match}", rule.match || "alert")
     .replaceAll("{alt}", ac.alt == null ? "" : String(ac.alt))
-    .replaceAll("{value}", rule.value || "");
+    .replaceAll("{value}", rule.value || "")
+    .replaceAll("{desc}", ac.desc || "")
+    .replaceAll("{operator}", ac.ownOp || "")
+    .replaceAll("{gs}", ac.gs == null ? "" : String(Math.round(Number(ac.gs))))
+    .replaceAll("{squawk}", ac.squawk || "")
+    .replaceAll("{flight}", ac.flight || callsign(ac));
 }
 
 function newRuleId() {
@@ -861,6 +886,73 @@ function slim(raw) {
     version: raw.version,
     source: raw.source || (raw.mlat && raw.mlat.length ? "MLAT" : "ADS-B"),
   };
+}
+
+
+function asList(v) {
+  if (!v) return [];
+  return Array.isArray(v) ? v : [v];
+}
+
+function markerPair(ac) {
+  if (!MARKERS) return ["unknown", 1];
+  const raw = (ac.t || "").toUpperCase();
+  const t = TYPE_ALIAS[raw] || raw;
+  if (MARKERS.types[t]) return MARKERS.types[t];
+  if (EXTRA_TYPES[t]) return EXTRA_TYPES[t];
+  const cat = ac.category || "";
+  if (MARKERS.categories[cat]) return MARKERS.categories[cat];
+  if (ac.alt === "ground") return ["ground_square", 1];
+  return ["unknown", 1];
+}
+
+function shapeSvg(shape, fill, stroke, size, selected) {
+  const scale = shape.strokeScale || 1;
+  const sw = (selected ? 1.1 : 0.75) * scale;
+  if (shape.svg) {
+    return String(shape.svg)
+      .split("fillColor").join(fill)
+      .split("strokeColor").join(stroke)
+      .split("strokeWidth").join(String(sw))
+      .replace("SIZE", "width=\"" + size + "\" height=\"" + size + "\"");
+  }
+  const vb = shape.viewBox || ("0 0 " + shape.w + " " + shape.h);
+  const paths = asList(shape.path).map((d) =>
+    "<path paint-order=\"stroke\" fill=\"" + fill + "\" stroke=\"" + stroke + "\" stroke-width=\"" + (2 * sw) + "\" stroke-linejoin=\"round\" d=\"" + d + "\"/>"
+  ).join("");
+  const accents = asList(shape.accent).map((d) =>
+    "<path fill=\"none\" stroke=\"" + stroke + "\" stroke-width=\"" + (0.6 * sw) + "\" d=\"" + d + "\"/>"
+  ).join("");
+  const inner = shape.transform ? ("<g transform=\"" + shape.transform + "\">" + paths + accents + "</g>") : (paths + accents);
+  const par = shape.noAspect ? "preserveAspectRatio=\"none\" " : "";
+  return "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"" + vb + "\" width=\"" + size + "\" height=\"" + size + "\" " + par + "aria-hidden=\"true\">" + inner + "</svg>";
+}
+
+function iconParts(ac, fill, stroke, base, selected) {
+  const [name, scale] = markerPair(ac);
+  const shape = (MARKERS && MARKERS.shapes && MARKERS.shapes[name]) || { w: 24, h: 24, viewBox: "0 0 24 24", path: PLANE_PATH };
+  const size = Math.round(base * (scale || 1));
+  return { svg: shapeSvg(shape, fill, stroke, size, selected), size, noRotate: !!shape.noRotate, name };
+}
+
+function loadMarkers(hass) {
+  if (MARKERS) return Promise.resolve(MARKERS);
+  if (markersLoader) return markersLoader;
+  const url = (hass && hass.hassUrl ? hass.hassUrl(MARKER_PATH) : MARKER_PATH) + "?v=" + CARD_VERSION;
+  markersLoader = fetch(url)
+    .then((r) => (r.ok ? r.json() : Promise.reject(new Error("markers " + r.status))))
+    .then((data) => {
+      MARKERS = data;
+      Object.keys(EXTRA_TYPES).forEach((t) => {
+        if (!MARKERS.types[t]) MARKERS.types[t] = EXTRA_TYPES[t];
+      });
+      return MARKERS;
+    })
+    .catch(() => {
+      markersLoader = null;
+      return null;
+    });
+  return markersLoader;
 }
 
 let leafletLoader = null;
@@ -931,7 +1023,9 @@ class AdsbGlobeCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._hydrateRules();
+    this._loadMarkerPack();
     if (!this.shadowRoot) return;
+    this._hydratePanelSize();
     if (!this._map) this._ensureMap();
   }
 
@@ -1044,7 +1138,7 @@ class AdsbGlobeCard extends HTMLElement {
 
       .settings {
         display: none; position: absolute; right: 54px; top: 10px; z-index: 1400;
-        width: min(300px, calc(100% - 70px)); max-height: calc(100% - 24px); overflow: auto;
+        width: min(320px, calc(100% - 70px)); max-height: calc(100% - 24px); overflow: auto;
         background: rgba(12,16,22,.96); color: #e8eef4;
         border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 12px; font-size: 13px;
         box-shadow: 0 8px 24px rgba(0,0,0,.45);
@@ -1055,6 +1149,12 @@ class AdsbGlobeCard extends HTMLElement {
       .settings input[type=range] { width: 120px; }
       .settings .hint { color: #90a4ae; font-size: 11px; }
       .settings .sec { margin: 12px 0 4px; font-size: 10px; letter-spacing: .08em; color: #90a4ae; text-transform: uppercase; }
+      .stepper { display: flex; align-items: center; gap: 6px; }
+      .stepper button {
+        width: 28px; height: 28px; border: 0; border-radius: 6px; cursor: pointer;
+        background: rgba(255,255,255,.1); color: #e8eef4; font-size: 16px;
+      }
+      .stepper .ps-val { min-width: 1.2em; text-align: center; font-weight: 700; }
 
       .ac-marker { display: flex; align-items: center; justify-content: center; transform-origin: center; }
       .ac-label {
@@ -1076,12 +1176,12 @@ class AdsbGlobeCard extends HTMLElement {
       .hover .k { color: #90a4ae; }
       .panel {
         display: none; position: absolute; left: 10px; top: 10px; z-index: 1500;
-        width: min(280px, calc(100% - 70px)); max-height: calc(100% - 20px); overflow: auto;
+        width: min(var(--panel-w, 208px), calc(100% - 70px)); max-height: var(--panel-h, 38%); overflow: auto;
         background: rgba(16,20,24,.94); color: #e8eef4; border-radius: 10px;
         box-shadow: 0 12px 32px rgba(0,0,0,.5);
       }
       .panel.open { display: block; }
-      .panel .photo { width: 100%; max-height: 140px; object-fit: cover; display: block; background: #111; }
+      .panel .photo { width: 100%; max-height: var(--panel-photo, 88px); object-fit: cover; display: block; background: #111; }
       .panel .cred { font-size: 10px; color: #90a4ae; padding: 4px 12px 0; }
       .panel .body { padding: 10px 12px 16px; }
       .panel .cs { font: 700 18px/1.2 ui-sans-serif, system-ui; }
@@ -1149,17 +1249,27 @@ class AdsbGlobeCard extends HTMLElement {
           <div class="hover"></div>
           <div class="panel"></div>
           <div class="settings">
-            <h3>Alerts</h3>
+            <h3>Settings</h3>
+            <div class="sec">Display</div>
+            <label>Details panel
+              <span class="stepper">
+                <button type="button" class="ps-minus" title="Smaller">−</button>
+                <span class="ps-val">2</span>
+                <button type="button" class="ps-plus" title="Larger">+</button>
+              </span>
+            </label>
+            <div class="hint">1 compact · 5 fills the card</div>
+            <div class="sec">Alerts</div>
             <label>Master notifications
               <input type="checkbox" class="notify" checked>
             </label>
-            <div class="hint">One rule per group, type or tail — each with its own radius, ring and message.</div>
+            <div class="hint">Each rule has its own radius, ring, text and actions.</div>
             <div class="sec">Nearby military & helicopters</div>
             <div class="chips"></div>
             <div class="sec">Rules</div>
             <div class="rules"></div>
             <button type="button" class="add-rule">+ Add alert</button>
-            <div class="hint" style="margin-top:8px">{callsign} {type} {reg} {hex} {dist} {match} {alt}</div>
+            <div class="hint" style="margin-top:8px">{callsign} {type} {reg} {hex} {dist} {match} {alt} {desc} {operator} {gs} {squawk}</div>
           </div>
         </div>
       </ha-card>
@@ -1182,6 +1292,8 @@ class AdsbGlobeCard extends HTMLElement {
     this._renderLayers();
     this._syncRail();
     this._hydrateRules();
+    this._hydratePanelSize();
+    this._loadMarkerPack();
     this._renderRules();
   }
 
@@ -1270,12 +1382,70 @@ class AdsbGlobeCard extends HTMLElement {
     panel.querySelector(".add-rule").addEventListener("click", () => {
       this._addRule({ match: "type", value: "", radius_nm: 20, message: "{callsign} ({type}/{reg}) {dist} NM" });
     });
+    const minus = panel.querySelector(".ps-minus");
+    const plus = panel.querySelector(".ps-plus");
+    if (minus) minus.addEventListener("click", () => this._nudgePanel(-1));
+    if (plus) plus.addEventListener("click", () => this._nudgePanel(1));
+  }
+
+  _nudgePanel(delta) {
+    this._panelSizeHydrated = true;
+    this._panelSize = Math.max(1, Math.min(5, (Number(this._panelSize) || 2) + delta));
+    this._applyPanelSize();
+    this._savePanelSize();
+  }
+
+  _hydratePanelSize() {
+    if (this._panelSizeHydrated) {
+      this._applyPanelSize();
+      return;
+    }
+    let n = Number(this._config && this._config.panel_size);
+    const st = this._entityState();
+    if (st && st.attributes && st.attributes.panel_size) n = Number(st.attributes.panel_size);
+    try {
+      const ls = Number(window.localStorage && localStorage.getItem("adsb_globe_panel_size"));
+      if (!n && ls) n = ls;
+    } catch (err) { /* ignore */ }
+    this._panelSize = Math.max(1, Math.min(5, n || 2));
+    this._panelSizeHydrated = true;
+    this._applyPanelSize();
+  }
+
+  _applyPanelSize() {
+    const step = Math.max(1, Math.min(5, Number(this._panelSize) || 2));
+    this._panelSize = step;
+    const spec = PANEL_STEPS[step - 1];
+    const panel = this._$(".panel");
+    if (panel) {
+      panel.style.setProperty("--panel-w", spec.w + "px");
+      panel.style.setProperty("--panel-h", spec.h);
+      panel.style.setProperty("--panel-photo", spec.photo + "px");
+    }
+    const val = this._$(".ps-val");
+    if (val) val.textContent = String(step);
+  }
+
+  _savePanelSize() {
+    try { localStorage.setItem("adsb_globe_panel_size", String(this._panelSize)); } catch (err) { /* ignore */ }
+    if (this._hass && this._hass.callService) {
+      this._hass.callService("adsb_globe", "set_options", { panel_size: this._panelSize });
+    }
+  }
+
+  _loadMarkerPack() {
+    if (this._markersRequested || !this._hass) return;
+    this._markersRequested = true;
+    loadMarkers(this._hass).then((data) => {
+      if (data && this._map) this._redrawIcons();
+    });
   }
 
   _syncSettings() {
     const panel = this._settingsEl;
     if (!panel) return;
     panel.querySelector(".notify").checked = this._notifyOn();
+    this._applyPanelSize();
     this._renderRules();
     this._renderChips();
   }
@@ -1298,6 +1468,10 @@ class AdsbGlobeCard extends HTMLElement {
       radius_nm: 20,
       show_ring: true,
       notify: true,
+      notify_service: "",
+      tts: false,
+      tts_media: "",
+      title: "ADS-B {match}",
       message: "{callsign} ({type}/{reg}) {dist} NM",
       ...partial,
     };
@@ -1368,11 +1542,18 @@ class AdsbGlobeCard extends HTMLElement {
         <input type="text" class="val" placeholder="${ph}" style="${needsVal ? "" : "display:none"}">
         <label>Radius <span class="rval">${rule.radius_nm}</span> NM <input type="range" class="rad" min="5" max="80" value="${rule.radius_nm || 15}"></label>
         <label>Show ring <input type="checkbox" class="ring" ${rule.show_ring ? "checked" : ""}></label>
-        <label>Notify <input type="checkbox" class="note" ${rule.notify !== false ? "checked" : ""}></label>
-        <input type="text" class="msg" placeholder="{callsign} ({type}) {dist} NM">
+        <input type="text" class="title" placeholder="Title · ADS-B {match}">
+        <input type="text" class="msg" placeholder="Message · {callsign} ({type}) {dist} NM">
+        <label>HA notification <input type="checkbox" class="note" ${rule.notify !== false ? "checked" : ""}></label>
+        <input type="text" class="svc" placeholder="Device · notify.mobile_app_…">
+        <label>Speak <input type="checkbox" class="tts" ${rule.tts ? "checked" : ""}></label>
+        <input type="text" class="ttsmedia" placeholder="media_player.xxx" style="${rule.tts ? "" : "display:none"}">
       `;
       div.querySelector(".val").value = rule.value || "";
+      div.querySelector(".title").value = rule.title || "ADS-B {match}";
       div.querySelector(".msg").value = rule.message || "";
+      div.querySelector(".svc").value = rule.notify_service || "";
+      div.querySelector(".ttsmedia").value = rule.tts_media || "";
       const sync = () => {
         rule.enabled = div.querySelector(".en").checked;
         rule.match = div.querySelector(".match").value;
@@ -1380,11 +1561,16 @@ class AdsbGlobeCard extends HTMLElement {
         rule.radius_nm = Number(div.querySelector(".rad").value);
         rule.show_ring = div.querySelector(".ring").checked;
         rule.notify = div.querySelector(".note").checked;
+        rule.title = div.querySelector(".title").value;
         rule.message = div.querySelector(".msg").value;
+        rule.notify_service = div.querySelector(".svc").value;
+        rule.tts = div.querySelector(".tts").checked;
+        rule.tts_media = div.querySelector(".ttsmedia").value;
         div.querySelector(".rval").textContent = String(rule.radius_nm);
         const show = rule.match === "type" || rule.match === "reg";
         div.querySelector(".val").style.display = show ? "" : "none";
         div.querySelector(".val").placeholder = rule.match === "reg" ? "G-XXXX / EI-IHK" : "B38M / 737 MAX 8 / PC-24";
+        div.querySelector(".ttsmedia").style.display = rule.tts ? "" : "none";
         this._drawRings();
       };
       div.querySelectorAll("input, select").forEach((n) => {
@@ -1406,7 +1592,11 @@ class AdsbGlobeCard extends HTMLElement {
     this._config.alert = { ...(this._config.alert || {}), enabled: notify, rules: this._rules };
     this._drawRings();
     if (this._hass && this._hass.callService) {
-      this._hass.callService("adsb_globe", "set_options", { notify, rules: JSON.stringify(this._rules) });
+      this._hass.callService("adsb_globe", "set_options", {
+        notify,
+        panel_size: this._panelSize || 2,
+        rules: JSON.stringify(this._rules),
+      });
     }
   }
 
@@ -1587,17 +1777,18 @@ class AdsbGlobeCard extends HTMLElement {
   }
 
   _iconHtml(ac, sel) {
-    const size = sel ? 44 : 36;
-    const rot = ac.track || 0;
     const color = ["7500", "7600", "7700"].includes(ac.squawk) ? "#ef5350" : altColor(ac.alt);
+    const stroke = sel ? "#fff" : "rgba(0,0,0,.55)";
+    const parts = iconParts(ac, color, stroke, sel ? 42 : 34, sel);
+    const rot = parts.noRotate ? 0 : (ac.track || 0);
+    const size = parts.size;
     const label = this._labels || sel
       ? `<div class="ac-label">${esc(callsign(ac))} ${ac.alt === "ground" ? "gnd" : (ac.alt != null ? Math.round(ac.alt) : "")}</div>`
       : "";
     return {
       size,
-      html: `<div class="ac-marker" style="width:${size}px;height:${size}px;transform:rotate(${rot}deg)">
-        <svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true"><path d="${PLANE_PATH}" fill="${color}" stroke="${sel ? "#fff" : "rgba(0,0,0,.55)"}" stroke-width="0.8" paint-order="stroke"/></svg>
-      </div>${label}`,
+      noRotate: parts.noRotate,
+      html: `<div class="ac-marker" data-shape="${esc(parts.name)}" style="width:${size}px;height:${size}px;transform:rotate(${rot}deg)">${parts.svg}</div>${label}`,
     };
   }
 
@@ -1641,7 +1832,7 @@ class AdsbGlobeCard extends HTMLElement {
     list.forEach((ac) => {
       keep.add(ac.hex);
       const sel = ac.hex === this._selected;
-      const { size, html } = this._iconHtml(ac, sel);
+      const { size, html, noRotate } = this._iconHtml(ac, sel);
       const existing = this._markers.get(ac.hex);
       if (existing) {
         const cur = existing.getLatLng();
@@ -1650,8 +1841,13 @@ class AdsbGlobeCard extends HTMLElement {
         });
         const el = existing.getElement();
         const mk = el && el.querySelector(".ac-marker");
-        if (mk) mk.style.transform = `rotate(${ac.track || 0}deg)`;
-        else existing.setIcon(L.divIcon({ className: "ac-icon", html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }));
+        if (mk) {
+          const color = ["7500", "7600", "7700"].includes(ac.squawk) ? "#ef5350" : altColor(ac.alt);
+          if (!noRotate) mk.style.transform = `rotate(${ac.track || 0}deg)`;
+          mk.querySelectorAll("path").forEach((path) => {
+            if (path.getAttribute("fill") !== "none") path.setAttribute("fill", color);
+          });
+        } else existing.setIcon(L.divIcon({ className: "ac-icon", html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }));
         existing.setZIndexOffset(sel ? 800 : 0);
       } else {
         const marker = L.marker([ac.lat, ac.lon], {

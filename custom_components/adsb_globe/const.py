@@ -22,9 +22,11 @@ CONF_ALERT_RADIUS = "alert_radius_nm"
 CONF_NAME = "name"
 CONF_NOTIFY = "notify"
 CONF_ALERT_RULES = "alert_rules"
+CONF_PANEL_SIZE = "panel_size"
 
 DEFAULT_ALERT_RADIUS = 15
 DEFAULT_SCAN_INTERVAL = 2
+DEFAULT_PANEL_SIZE = 2
 
 DEFAULT_ALERT_RULES = [
     {
@@ -35,6 +37,10 @@ DEFAULT_ALERT_RULES = [
         "radius_nm": 15,
         "show_ring": True,
         "notify": True,
+        "notify_service": "",
+        "tts": False,
+        "tts_media": "",
+        "title": "ADS-B {match}",
         "message": "{callsign} ({type}) military {dist} NM",
     },
     {
@@ -45,6 +51,10 @@ DEFAULT_ALERT_RULES = [
         "radius_nm": 15,
         "show_ring": True,
         "notify": True,
+        "notify_service": "",
+        "tts": False,
+        "tts_media": "",
+        "title": "ADS-B {match}",
         "message": "{callsign} ({type}) helicopter {dist} NM",
     },
 ]

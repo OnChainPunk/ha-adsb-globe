@@ -1,6 +1,6 @@
 set_options:
   name: Set options
-  description: Update alert radius, notifications and alert rules
+  description: Update alert radius, notifications, panel size and alert rules
   fields:
     radius_nm:
       name: Alert radius
@@ -12,9 +12,16 @@ set_options:
           unit_of_measurement: NM
     notify:
       name: Notifications
-      description: Master switch for persistent notifications
+      description: Master switch for alert actions
       selector:
         boolean:
+    panel_size:
+      name: Details panel size
+      description: 1 compact through 5 large
+      selector:
+        number:
+          min: 1
+          max: 5
     rules:
       name: Alert rules
-      description: JSON list of alert rules (match, radius, ring, message)
+      description: JSON list of alert rules (match, radius, ring, title, message, notify, notify_service, tts)
