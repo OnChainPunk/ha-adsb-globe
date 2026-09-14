@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import json
 import math
+import time
 from typing import Any
 
 from aiohttp import ClientError, ClientTimeout
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DEFAULT_SOURCES, MAX_DIST_NM, PROVIDERS
+from .const import DEFAULT_SOURCES, DOMAIN, MAX_DIST_NM, MAX_VIEW_TILES
 
 _LOGGER = logging.getLogger(__name__)
 _TIMEOUT = ClientTimeout(total=8)
 _TRACE_TIMEOUT = ClientTimeout(total=6)
-_UA = "HomeAssistant-ADS-B-Globe/1.5 (+https://github.com/OnChainPunk/ha-adsb-globe)"
+_UA = "HomeAssistant-ADS-B-Globe/1.6 (+https://github.com/OnChainPunk/ha-adsb-globe)"
 
 
 def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -192,6 +194,14 @@ async def _get_json(hass: HomeAssistant, url: str) -> dict[str, Any]:
         return data
 
 
+def _clamp_interval(raw: Any) -> float:
+    try:
+        n = float(raw)
+    except (TypeError, ValueError):
+        n = 1.0
+    return max(0.5, min(30.0, n))
+
+
 def _as_sources(raw: Any) -> list[dict[str, Any]]:
     if isinstance(raw, str):
         try:
@@ -214,28 +224,179 @@ def _as_sources(raw: Any) -> list[dict[str, Any]]:
                 "label": str(item.get("label") or host)[:80],
                 "url": url[:500],
                 "enabled": item.get("enabled", True) is not False,
+                "interval": _clamp_interval(item.get("interval", 1)),
             }
         )
     return out
 
 
-async def pull_from_sources(
-    hass: HomeAssistant, lat: float, lon: float, dist: float, sources: Any
-) -> dict[str, Any]:
+def plan_tiles(
+    lat: float,
+    lon: float,
+    dist: float,
+    bounds: tuple[float, float, float, float] | None,
+    max_tiles: int = MAX_VIEW_TILES,
+) -> list[tuple[float, float, int]]:
+    """Cover the viewport with overlapping 250 NM circles.
+
+    Public aggregators (adsb.lol / adsb.fi) cap a single request at 250 NM.
+    tar1090/ADS-B Exchange load globe tiles instead of one circle around the
+    camera, so aircraft stay at true lat/lon when the map pans.
+    """
     dist = max(8, min(MAX_DIST_NM, float(dist)))
-    parsed = _as_sources(sources)
-    enabled = [s for s in parsed if s.get("enabled", True)]
-    if not enabled:
-        raise RuntimeError("No data sources enabled")
-    merged: dict[str, dict[str, Any]] = {}
-    names: list[str] = []
-    last = "No source answered"
-    for src in enabled:
+    center = (round(lat, 3), round(lon, 3), int(dist))
+    if not bounds:
+        return [center]
+    south, west, north, east = bounds
+    south = max(-85.0, min(85.0, float(south)))
+    north = max(-85.0, min(85.0, float(north)))
+    if north <= south:
+        north = min(85.0, south + 0.5)
+    west = float(west)
+    east = float(east)
+    if east < west:
+        east += 360.0
+    mid_lat = (south + north) / 2.0
+    coslat = max(0.2, math.cos(math.radians(mid_lat)))
+    span_lat_nm = (north - south) * 60.0
+    span_lon_nm = (east - west) * 60.0 * coslat
+    half = math.hypot(span_lat_nm / 2.0, span_lon_nm / 2.0)
+    if half <= 230:
+        return [(round(lat, 3), round(lon, 3), int(min(MAX_DIST_NM, max(dist, half * 1.05))))]
+
+    tile_nm = 210.0
+    step_lat = (tile_nm * 0.88) / 60.0
+    step_lon = (tile_nm * 0.88) / (60.0 * coslat)
+    lats: list[float] = []
+    y = south + step_lat * 0.45
+    while y < north and len(lats) < 4:
+        lats.append(y)
+        y += step_lat
+    if not lats:
+        lats = [lat]
+    lons: list[float] = []
+    x = west + step_lon * 0.45
+    while x < east and len(lons) < 4:
+        lons.append(x)
+        x += step_lon
+    if not lons:
+        lons = [lon]
+
+    pts: list[tuple[float, float, int]] = []
+    seen: set[tuple[float, float]] = set()
+
+    def add(la: float, lo: float) -> None:
+        la_r = round(la, 3)
+        lo_n = ((lo + 180.0) % 360.0) - 180.0
+        lo_r = round(lo_n, 3)
+        key = (la_r, lo_r)
+        if key in seen:
+            return
+        seen.add(key)
+        pts.append((la_r, lo_r, MAX_DIST_NM))
+
+    add(lat, lon)
+    for la in lats:
+        for lo in lons:
+            add(la, lo)
+            if len(pts) >= max_tiles:
+                return pts
+    return pts or [center]
+
+
+def _feed_state(hass: HomeAssistant) -> dict[str, Any]:
+    bucket = hass.data.setdefault(DOMAIN, {}).setdefault("_feed", {})
+    bucket.setdefault("cache", {})
+    bucket.setdefault("locks", {})
+    bucket.setdefault("last_http", {})
+    bucket.setdefault("pending", set())
+    return bucket
+
+
+def _tile_key(src_id: str, lat: float, lon: float, templated: bool) -> str:
+    if not templated:
+        return f"{src_id}:all"
+    return f"{src_id}:{lat:.3f}:{lon:.3f}"
+
+
+def _parse_tile_key(key: str) -> tuple[str, float, float] | None:
+    if key.endswith(":all"):
+        return None
+    src_id, _, rest = key.partition(":")
+    try:
+        lat_s, lon_s = rest.rsplit(":", 1)
+        return src_id, float(lat_s), float(lon_s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _ac_in_view(ac: dict[str, Any], bounds: tuple[float, float, float, float] | None, pad_deg: float = 1.6) -> bool:
+    if not bounds:
+        return True
+    south, west, north, east = bounds
+    la = ac["lat"]
+    lo = ac["lon"]
+    if la < south - pad_deg or la > north + pad_deg:
+        return False
+    if east >= west:
+        return west - pad_deg <= lo <= east + pad_deg
+    return lo >= west - pad_deg or lo <= east + pad_deg
+
+
+def _prune_cache(cache: dict[str, Any], now: float) -> None:
+    stale = [k for k, rec in cache.items() if now - rec.get("t", 0) > 90]
+    for k in stale:
+        cache.pop(k, None)
+    if len(cache) <= 48:
+        return
+    by_age = sorted(cache.items(), key=lambda kv: kv[1].get("t", 0))
+    for k, _ in by_age[: len(cache) - 48]:
+        cache.pop(k, None)
+
+
+def _merge_ac(merged: dict[str, dict[str, Any]], rows: list[dict[str, Any]], label: str) -> int:
+    got = 0
+    for ac in rows:
+        prev = merged.get(ac["hex"])
+        if prev is None or (ac.get("seen") or 9e9) <= (prev.get("seen") or 9e9):
+            ac = dict(ac)
+            ac["source"] = label
+            merged[ac["hex"]] = ac
+            got += 1
+    return got
+
+
+async def _load_tile(
+    hass: HomeAssistant,
+    src: dict[str, Any],
+    lat: float,
+    lon: float,
+    dist: float,
+) -> dict[str, Any] | None:
+    templated = "{lat}" in src["url"]
+    key = _tile_key(src["id"], lat, lon, templated)
+    state = _feed_state(hass)
+    cache: dict[str, Any] = state["cache"]
+    locks: dict[str, asyncio.Lock] = state["locks"]
+    last_http: dict[str, float] = state["last_http"]
+    lock = locks.setdefault(src["id"], asyncio.Lock())
+    interval = _clamp_interval(src.get("interval", 1))
+    now = time.monotonic()
+    rec = cache.get(key)
+    if rec and now - rec["t"] < interval:
+        return rec
+    async with lock:
+        now = time.monotonic()
+        rec = cache.get(key)
+        if rec and now - rec["t"] < interval:
+            return rec
+        wait = interval - (now - last_http.get(src["id"], 0.0))
+        if wait > 0:
+            await asyncio.sleep(min(wait, 8.0))
         url = src["url"]
         if not url.lower().startswith(("http://", "https://")):
-            last = "unsupported URL scheme"
-            continue
-        if "{lat}" in url:
+            return rec
+        if templated:
             url = (
                 url.replace("{lat}", str(lat))
                 .replace("{lon}", str(lon))
@@ -243,25 +404,131 @@ async def pull_from_sources(
             )
         try:
             data = await _get_json(hass, url)
-            rows = data.get("ac") or data.get("aircraft") or []
-            got = 0
-            for raw in rows:
+            rows = []
+            for raw in data.get("ac") or data.get("aircraft") or []:
                 ac = slim(raw)
-                if not ac:
-                    continue
-                prev = merged.get(ac["hex"])
-                if prev is None or (ac.get("seen") or 9e9) <= (prev.get("seen") or 9e9):
-                    ac["source"] = src.get("label") or src["id"]
-                    merged[ac["hex"]] = ac
-                    got += 1
-            if got:
-                names.append(str(src.get("label") or src["id"]))
+                if ac:
+                    rows.append(ac)
+            rec = {
+                "t": time.monotonic(),
+                "ac": rows,
+                "label": str(src.get("label") or src["id"]),
+            }
+            cache[key] = rec
+            last_http[src["id"]] = rec["t"]
+            return rec
         except (ClientError, TimeoutError, ValueError, RuntimeError) as err:
-            last = str(err)
-            continue
+            last_http[src["id"]] = time.monotonic()
+            if "429" in str(err) or "403" in str(err):
+                if rec:
+                    rec = dict(rec)
+                    rec["t"] = time.monotonic()
+                    cache[key] = rec
+            _LOGGER.debug("tile %s failed: %s", key, err)
+            return rec
+
+
+async def _refresh_tile_bg(hass: HomeAssistant, src: dict[str, Any], lat: float, lon: float, dist: float) -> None:
+    state = _feed_state(hass)
+    templated = "{lat}" in src["url"]
+    key = _tile_key(src["id"], lat, lon, templated)
+    pending: set[str] = state["pending"]
+    if key in pending:
+        return
+    pending.add(key)
+    try:
+        await _load_tile(hass, src, lat, lon, dist)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("bg tile %s: %s", key, err)
+    finally:
+        pending.discard(key)
+
+
+async def pull_from_sources(
+    hass: HomeAssistant,
+    lat: float,
+    lon: float,
+    dist: float,
+    sources: Any,
+    bounds: tuple[float, float, float, float] | None = None,
+) -> dict[str, Any]:
+    dist = max(8, min(MAX_DIST_NM, float(dist)))
+    parsed = _as_sources(sources)
+    enabled = [s for s in parsed if s.get("enabled", True)]
+    if not enabled:
+        raise RuntimeError("No data sources enabled")
+    tiles = plan_tiles(lat, lon, dist, bounds)
+    state = _feed_state(hass)
+    cache: dict[str, Any] = state["cache"]
+    _prune_cache(cache, time.monotonic())
+
+    # Wait only for each source's centre tile (or its whole-file feeder).
+    # Extra viewport tiles fill from cache and refresh in the background so
+    # a pan cannot wipe aircraft that still sit in view — same idea as tar1090
+    # globe tiles.
+    centre_jobs = []
+    for src in enabled:
+        tlat, tlon, tdist = tiles[0]
+        centre_jobs.append(_load_tile(hass, src, tlat, tlon, tdist))
+    centre_out = await asyncio.gather(*centre_jobs, return_exceptions=True)
+
+    merged: dict[str, dict[str, Any]] = {}
+    names: list[str] = []
+    last = "No source answered"
+    for src, rec in zip(enabled, centre_out):
+        templated = "{lat}" in src["url"]
+        src_tiles = tiles if templated else [tiles[0]]
+        if isinstance(rec, Exception):
+            last = str(rec)
+        elif rec and rec.get("label"):
+            names.append(str(rec["label"]))
+        bg = 0
+        scheduled = set()
+        for tlat, tlon, tdist in src_tiles:
+            key = _tile_key(src["id"], tlat, tlon, templated)
+            cached = cache.get(key)
+            interval = _clamp_interval(src.get("interval", 1))
+            fresh = cached and time.monotonic() - cached["t"] < interval
+            if cached:
+                _merge_ac(merged, cached.get("ac") or [], cached.get("label") or src["id"])
+            if not fresh and (tlat, tlon) != (src_tiles[0][0], src_tiles[0][1]):
+                hass.async_create_task(_refresh_tile_bg(hass, src, tlat, tlon, tdist))
+                scheduled.add(key)
+                bg += 1
+        # Keep tiles that still overlap this view (e.g. UK after panning east).
+        if templated:
+            interval = _clamp_interval(src.get("interval", 1))
+            for key, cached in list(cache.items()):
+                parsed = _parse_tile_key(key)
+                if not parsed or parsed[0] != src["id"] or key in scheduled:
+                    continue
+                _, tlat, tlon = parsed
+                if bounds and not _ac_in_view({"lat": tlat, "lon": tlon}, bounds, pad_deg=4.2):
+                    continue
+                _merge_ac(merged, cached.get("ac") or [], cached.get("label") or src["id"])
+                if time.monotonic() - cached["t"] >= interval and bg < 4:
+                    hass.async_create_task(_refresh_tile_bg(hass, src, tlat, tlon, MAX_DIST_NM))
+                    bg += 1
+        else:
+            key = _tile_key(src["id"], 0, 0, False)
+            cached = cache.get(key)
+            if cached:
+                _merge_ac(merged, cached.get("ac") or [], cached.get("label") or src["id"])
+
+    if bounds:
+        merged = {h: ac for h, ac in merged.items() if _ac_in_view(ac, bounds)}
     if not merged:
         raise RuntimeError(last)
-    return {"ac": list(merged.values()), "total": len(merged), "source": "+".join(names) or "none"}
+    seen_names = []
+    for n in names:
+        if n not in seen_names:
+            seen_names.append(n)
+    return {
+        "ac": list(merged.values()),
+        "total": len(merged),
+        "source": "+".join(seen_names) or "none",
+        "tiles": len(tiles),
+    }
 
 
 

@@ -79,9 +79,10 @@ PROVIDERS = (
 )
 
 DEFAULT_SOURCES = [
-    {"id": "adsblol", "label": "adsb.lol", "url": PROVIDERS[0], "enabled": True},
-    {"id": "adsbfi", "label": "opendata.adsb.fi", "url": PROVIDERS[1], "enabled": True},
+    {"id": "adsblol", "label": "adsb.lol", "url": PROVIDERS[0], "enabled": True, "interval": 1},
+    {"id": "adsbfi", "label": "opendata.adsb.fi", "url": PROVIDERS[1], "enabled": True, "interval": 1},
 ]
 
 MAX_DIST_NM = 250
 MAX_SENSOR_AIRCRAFT = 180
+MAX_VIEW_TILES = 9

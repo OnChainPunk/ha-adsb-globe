@@ -17,6 +17,19 @@ def _entry_sources(hass: HomeAssistant):
     return {**entry.data, **entry.options}.get(CONF_SOURCES)
 
 
+def _bounds(request):
+    try:
+        south = float(request.query["south"])
+        west = float(request.query["west"])
+        north = float(request.query["north"])
+        east = float(request.query["east"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if north <= south:
+        return None
+    return (south, west, north, east)
+
+
 class AdsbAircraftView(HomeAssistantView):
     url = "/api/adsb_globe/aircraft"
     name = "api:adsb_globe:aircraft"
@@ -31,7 +44,9 @@ class AdsbAircraftView(HomeAssistantView):
         except (KeyError, TypeError, ValueError):
             return self.json({"error": "lat, lon required"}, status_code=400)
         try:
-            data = await pull_from_sources(hass, lat, lon, dist, _entry_sources(hass))
+            data = await pull_from_sources(
+                hass, lat, lon, dist, _entry_sources(hass), bounds=_bounds(request)
+            )
         except Exception as err:  # noqa: BLE001
             return self.json({"error": str(err), "ac": []}, status_code=502)
         return self.json(data)

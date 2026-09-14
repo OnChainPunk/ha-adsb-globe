@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.5.0";
+const CARD_VERSION = "1.6.0";
 const POLL_MS = 1000;
 const MAX_DIST = 250;
 const MAX_TRAIL = 64;
@@ -751,8 +751,8 @@ const DEFAULT_RULES = [
 ];
 const RING_COLORS = ["#ffa726", "#29b6f6", "#66bb6a", "#ab47bc", "#ef5350", "#26c6da", "#ffee58"];
 const DEFAULT_SOURCES = [
-  { id: "adsblol", label: "adsb.lol", url: "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}", enabled: true },
-  { id: "adsbfi", label: "opendata.adsb.fi", url: "https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{dist}", enabled: true },
+  { id: "adsblol", label: "adsb.lol", url: "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}", enabled: true, interval: 1 },
+  { id: "adsbfi", label: "opendata.adsb.fi", url: "https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{dist}", enabled: true, interval: 1 },
 ];
 const DEFAULT_QUICK = [
   { id: "q_mil", label: "All military", match: "military", value: "", radius_nm: 15, title: "ADS-B military", message: "{callsign} ({type}) military {dist} NM" },
@@ -1203,9 +1203,15 @@ class AdsbGlobeCard extends HTMLElement {
       .pair select, .pair input { flex: 1; min-width: 0; }
       .src-row, .q-row {
         display: flex; align-items: center; gap: 6px; margin: 5px 0;
-        font-size: 12px;
+        font-size: 12px; flex-wrap: wrap;
       }
-      .src-row span, .q-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .src-row span.name, .q-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .src-row .rate {
+        flex: 1 0 100%; display: flex; align-items: center; gap: 8px;
+        margin: 0 0 4px 22px; color: #90a4ae; font-size: 11px;
+      }
+      .src-row .rate input[type=range] { width: 110px; }
+      .src-row .rate .ival { color: #90caf9; min-width: 2.8em; font-variant-numeric: tabular-nums; }
       .src-add, .q-add { width: 100%; margin-top: 6px; }
       .fine label span.num { font-variant-numeric: tabular-nums; color: #90caf9; min-width: 3.2em; text-align: right; }
       .fine input[type=range] { width: 140px; }
@@ -1306,7 +1312,7 @@ class AdsbGlobeCard extends HTMLElement {
               <button type="button" data-corner="br">Bottom right</button>
             </div>
             <div class="sec">Data sources</div>
-            <div class="hint">Enable networks or paste a tar1090 aircraft.json URL.</div>
+            <div class="hint">Enable networks or paste a tar1090 aircraft.json URL. Each stream has its own update rate. Public feeds cap one request at 250 NM — extra tiles fill the rest of the view so planes stay put when you pan.</div>
             <div class="sources"></div>
             <div class="pair">
               <input type="text" class="src-url" placeholder="https://host/tar1090/data/aircraft.json">
@@ -1349,6 +1355,7 @@ class AdsbGlobeCard extends HTMLElement {
     this._paused = false;
     this._mapId = this._config.map && MAPS[this._config.map] ? this._config.map : "dark";
     this._lastAc = [];
+    this._byHex = new Map();
     this._interp = new Map();
     this._rules = (this._config.alert && this._config.alert.rules) || DEFAULT_RULES.map((r) => ({ ...r }));
     this._sources = DEFAULT_SOURCES.map((r) => ({ ...r }));
@@ -1672,6 +1679,7 @@ class AdsbGlobeCard extends HTMLElement {
       label,
       url: raw,
       enabled: true,
+      interval: 1,
     });
     if (inp) inp.value = "";
     this._renderSources();
@@ -1683,12 +1691,26 @@ class AdsbGlobeCard extends HTMLElement {
     if (!el) return;
     el.innerHTML = "";
     (this._sources || []).forEach((src, i) => {
+      if (src.interval == null || !(Number(src.interval) > 0)) src.interval = 1;
       const row = document.createElement("div");
       row.className = "src-row";
-      row.innerHTML = `<input type="checkbox" class="on"> <span title="${esc(src.url)}">${esc(src.label || src.url)}</span> <button type="button" class="rm" title="Remove">×</button>`;
+      const ival = Number(src.interval) || 1;
+      row.innerHTML = `<input type="checkbox" class="on"> <span class="name" title="${esc(src.url)}">${esc(src.label || src.url)}</span> <button type="button" class="rm" title="Remove">×</button>
+        <div class="rate">Update <span class="ival">${ival}s</span> <input type="range" class="intv" min="0.5" max="10" step="0.5" value="${ival}"></div>`;
       row.querySelector(".on").checked = src.enabled !== false;
       row.querySelector(".on").addEventListener("change", () => {
         src.enabled = row.querySelector(".on").checked;
+        this._savePrefs();
+      });
+      const slider = row.querySelector(".intv");
+      const ivalEl = row.querySelector(".ival");
+      slider.addEventListener("input", () => {
+        src.interval = Number(slider.value);
+        ivalEl.textContent = src.interval + "s";
+      });
+      slider.addEventListener("change", () => {
+        src.interval = Number(slider.value);
+        ivalEl.textContent = src.interval + "s";
         this._savePrefs();
       });
       row.querySelector(".rm").addEventListener("click", () => {
@@ -2069,13 +2091,23 @@ class AdsbGlobeCard extends HTMLElement {
     if (this._gone || this._paused || !this._map) return;
     const seq = (this._fetchSeq = (this._fetchSeq || 0) + 1);
     const c = this._map.getCenter();
+    const b = this._map.getBounds();
     const dist = this._viewDist();
     let data = null;
     try {
       if (this._hass && this._hass.callApi) {
+        const q = [
+          `lat=${c.lat.toFixed(4)}`,
+          `lon=${c.lng.toFixed(4)}`,
+          `dist=${dist}`,
+          `south=${b.getSouth().toFixed(4)}`,
+          `west=${b.getWest().toFixed(4)}`,
+          `north=${b.getNorth().toFixed(4)}`,
+          `east=${b.getEast().toFixed(4)}`,
+        ].join("&");
         data = await Promise.race([
-          this._hass.callApi("GET", `adsb_globe/aircraft?lat=${c.lat.toFixed(4)}&lon=${c.lng.toFixed(4)}&dist=${dist}`),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000)),
+          this._hass.callApi("GET", `adsb_globe/aircraft?${q}`),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 12000)),
         ]);
       }
     } catch (err) {
@@ -2087,10 +2119,34 @@ class AdsbGlobeCard extends HTMLElement {
       if (this._dot && !(this._lastAc && this._lastAc.length)) this._dot.classList.add("off");
       return;
     }
-    const ac = (data.ac || data.aircraft).map(slim).filter(Boolean);
+    const incoming = (data.ac || data.aircraft).map(slim).filter(Boolean);
+    const ac = this._mergeTraffic(incoming);
     this._lastAc = ac;
     this._lastSource = data.source || "live";
     this._paint({ ac, source: this._lastSource });
+  }
+
+  _mergeTraffic(incoming) {
+    if (!this._byHex) this._byHex = new Map();
+    const now = performance.now();
+    for (const ac of incoming) {
+      this._byHex.set(ac.hex, { ac, t: now });
+    }
+    if (!this._map) return incoming;
+    let pad;
+    try {
+      pad = this._map.getBounds().pad(0.25);
+    } catch (err) {
+      pad = null;
+    }
+    for (const [hex, rec] of [...this._byHex]) {
+      if (hex === this._selected) continue;
+      const age = now - rec.t;
+      const on = pad ? pad.contains([rec.ac.lat, rec.ac.lon]) : true;
+      if (!on) this._byHex.delete(hex);
+      else if (age > 30000) this._byHex.delete(hex);
+    }
+    return [...this._byHex.values()].map((r) => r.ac);
   }
 
   _iconHtml(ac, sel) {

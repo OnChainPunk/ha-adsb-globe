@@ -20,20 +20,17 @@ After an update: HACS → ADS-B Globe → **Redownload**, restart HA, then **Ctr
 - Lovelace card: live map, selectable basemaps, ADS-B Exchange / tar1090 silhouettes (airliner, heli, Chinook, Apache, fighter, …)
 - Hover a plane for the compact popup (callsign, hex, reg, type, alt, speed, source, RSSI)
 - Click a plane for the full scrollable details panel (photo, spatial, signal, FMS, wind, speed, altitude, direction, accuracy) and its **full trail**
-- Click empty map to close the panel, trail **and settings**
-- Gear → **Details box**: width (px), height (%), left (%), top (%) sliders plus top-left / top-right / bottom-left / bottom-right
-- Gear → **Data sources**: enable/disable adsb.lol and opendata.adsb.fi, or paste a tar1090 `aircraft.json` URL into the list
-- Gear → **Quick select**: edit the chip list (label, match, type/reg, radius, title, message) then tap a chip to add a watch rule
-- Gear → alert rules: all military, all helicopters, Chinook / Apache / Black Hawk / fighter / police / emergency, or a specific **type** (B38M, 737 MAX 8, PC-24) or **registration**
-- Each rule has its own radius, show/hide ring, **title**, **message**, HA notification, **notify device dropdown** (plus custom `notify.…`), and **Speak** dropdown of `media_player` entities (plus custom)
-- Nearby military & helicopters in view can be tapped to add a watch rule
+- Click empty map to close the panel, trail and settings
+- Gear → details box: width, height, left, top sliders and corner presets
+- Gear → **data sources**: enable/disable adsb.lol and opendata.adsb.fi, or paste a tar1090 `aircraft.json` URL. Each stream has its own **update rate**. Public APIs cap one request at 250 NM; the card loads overlapping tiles and **keeps aircraft at their real positions when you pan** (same idea as ADS-B Exchange / tar1090 globe tiles)
+- Gear → **quick select**: editable chips (label, match, type/reg, radius, title, message) that add a watch
+- Gear → alert rules: military / helicopters / Chinook / Apache / Black Hawk / fighter / police / emergency, or a specific **type** or **registration**
+- Each rule: radius, ring, title, message, HA notification, **notify device dropdown** (or custom), **speak dropdown** (or custom media player)
 - `sensor.ads_b_in_area` with the aircraft list
 - Binary sensors: military, helicopter, Chinook, Apache, Black Hawk, police, fighter, emergency squawk
 - Persistent notifications + events `adsb_globe_entry` / `adsb_globe_exit` for automations
 
-Map traffic is always the **current view**. Home-area aircraft from the sensor are never painted onto a panned map (that was the “planes slide across the world” glitch). Positions that would require an impossible speed are snapped, same idea as tar1090’s position filter.
-
-Optional local feeder: paste `http://<tar1090-host>/tar1090/data/aircraft.json` under Data sources.
+Optional local feeder: `http://<tar1090-host>/tar1090/data/aircraft.json`
 
 Aircraft silhouettes are from [tar1090](https://github.com/wiedehopf/tar1090) (GPL-3.0), the same family ADS-B Exchange uses.
 
