@@ -1,10 +1,9 @@
 set_options:
   name: Set options
-  description: Update alert radius, notifications, panel size and alert rules
+  description: Update alerts, panel layout, data sources and quick types
   fields:
     radius_nm:
       name: Alert radius
-      description: Default nautical miles from home
       selector:
         number:
           min: 5
@@ -12,16 +11,19 @@ set_options:
           unit_of_measurement: NM
     notify:
       name: Notifications
-      description: Master switch for alert actions
       selector:
         boolean:
     panel_size:
-      name: Details panel size
-      description: 1 compact through 5 large
+      name: Details panel size (legacy 1-5)
       selector:
         number:
           min: 1
           max: 5
+    panel:
+      name: Panel layout JSON
+    sources:
+      name: Data source list JSON
+    quick_types:
+      name: Quick-select type list JSON
     rules:
-      name: Alert rules
-      description: JSON list of alert rules (match, radius, ring, title, message, notify, notify_service, tts)
+      name: Alert rules JSON

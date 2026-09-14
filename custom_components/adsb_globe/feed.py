@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import math
 from typing import Any
 
@@ -8,12 +9,12 @@ from aiohttp import ClientError, ClientTimeout
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import MAX_DIST_NM, PROVIDERS
+from .const import DEFAULT_SOURCES, MAX_DIST_NM, PROVIDERS
 
 _LOGGER = logging.getLogger(__name__)
 _TIMEOUT = ClientTimeout(total=8)
 _TRACE_TIMEOUT = ClientTimeout(total=6)
-_UA = "HomeAssistant-ADS-B-Globe/1.3 (+https://github.com/OnChainPunk/ha-adsb-globe)"
+_UA = "HomeAssistant-ADS-B-Globe/1.5 (+https://github.com/OnChainPunk/ha-adsb-globe)"
 
 
 def haversine_nm(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -175,25 +176,93 @@ def format_alert(template: str, ac: dict[str, Any], rule: dict[str, Any], dist: 
 
 
 async def pull_public(hass: HomeAssistant, lat: float, lon: float, dist: float) -> dict[str, Any]:
-    dist = max(8, min(MAX_DIST_NM, float(dist)))
+    return await pull_from_sources(hass, lat, lon, dist, list(DEFAULT_SOURCES))
+
+
+async def _get_json(hass: HomeAssistant, url: str) -> dict[str, Any]:
     session = async_get_clientsession(hass)
-    last = "No provider answered"
-    for tmpl in PROVIDERS:
-        url = tmpl.format(lat=lat, lon=lon, dist=int(dist))
+    async with session.get(url, timeout=_TIMEOUT, headers={"User-Agent": _UA, "Accept": "application/json"}) as resp:
+        if resp.status in (403, 429) or resp.status >= 500:
+            raise RuntimeError(f"{url} {resp.status}")
+        if resp.status != 200:
+            raise RuntimeError(f"{url} {resp.status}")
+        data = await resp.json(content_type=None)
+        if not isinstance(data, dict):
+            raise RuntimeError(f"{url} not json object")
+        return data
+
+
+def _as_sources(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, str):
         try:
-            async with session.get(url, timeout=_TIMEOUT, headers={"User-Agent": _UA, "Accept": "application/json"}) as resp:
-                if resp.status in (403, 429) or resp.status >= 500:
-                    last = f"{url} {resp.status}"
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = None
+    if raw is None or not isinstance(raw, list):
+        return [dict(s) for s in DEFAULT_SOURCES]
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        host = url.split("/")[2] if "://" in url else url
+        out.append(
+            {
+                "id": str(item.get("id") or url)[:80],
+                "label": str(item.get("label") or host)[:80],
+                "url": url[:500],
+                "enabled": item.get("enabled", True) is not False,
+            }
+        )
+    return out
+
+
+async def pull_from_sources(
+    hass: HomeAssistant, lat: float, lon: float, dist: float, sources: Any
+) -> dict[str, Any]:
+    dist = max(8, min(MAX_DIST_NM, float(dist)))
+    parsed = _as_sources(sources)
+    enabled = [s for s in parsed if s.get("enabled", True)]
+    if not enabled:
+        raise RuntimeError("No data sources enabled")
+    merged: dict[str, dict[str, Any]] = {}
+    names: list[str] = []
+    last = "No source answered"
+    for src in enabled:
+        url = src["url"]
+        if not url.lower().startswith(("http://", "https://")):
+            last = "unsupported URL scheme"
+            continue
+        if "{lat}" in url:
+            url = (
+                url.replace("{lat}", str(lat))
+                .replace("{lon}", str(lon))
+                .replace("{dist}", str(int(dist)))
+            )
+        try:
+            data = await _get_json(hass, url)
+            rows = data.get("ac") or data.get("aircraft") or []
+            got = 0
+            for raw in rows:
+                ac = slim(raw)
+                if not ac:
                     continue
-                if resp.status != 200:
-                    last = f"{url} {resp.status}"
-                    continue
-                data = await resp.json(content_type=None)
-                ac = [s for s in (slim(x) for x in (data.get("ac") or [])) if s]
-                return {"ac": ac, "total": data.get("total", len(ac)), "source": url.split("/")[2]}
-        except (ClientError, TimeoutError, ValueError) as err:
+                prev = merged.get(ac["hex"])
+                if prev is None or (ac.get("seen") or 9e9) <= (prev.get("seen") or 9e9):
+                    ac["source"] = src.get("label") or src["id"]
+                    merged[ac["hex"]] = ac
+                    got += 1
+            if got:
+                names.append(str(src.get("label") or src["id"]))
+        except (ClientError, TimeoutError, ValueError, RuntimeError) as err:
             last = str(err)
-    raise RuntimeError(last)
+            continue
+    if not merged:
+        raise RuntimeError(last)
+    return {"ac": list(merged.values()), "total": len(merged), "source": "+".join(names) or "none"}
+
 
 
 async def pull_feeder(hass: HomeAssistant, feeder_url: str) -> dict[str, Any]:

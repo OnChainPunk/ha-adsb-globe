@@ -5,7 +5,16 @@ from __future__ import annotations
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.core import HomeAssistant
 
-from .feed import pull_photo, pull_public, pull_trace
+from .const import CONF_SOURCES, DOMAIN
+from .feed import pull_from_sources, pull_photo, pull_trace
+
+
+def _entry_sources(hass: HomeAssistant):
+    entries = hass.config_entries.async_entries(DOMAIN)
+    if not entries:
+        return None
+    entry = entries[0]
+    return {**entry.data, **entry.options}.get(CONF_SOURCES)
 
 
 class AdsbAircraftView(HomeAssistantView):
@@ -22,7 +31,7 @@ class AdsbAircraftView(HomeAssistantView):
         except (KeyError, TypeError, ValueError):
             return self.json({"error": "lat, lon required"}, status_code=400)
         try:
-            data = await pull_public(hass, lat, lon, dist)
+            data = await pull_from_sources(hass, lat, lon, dist, _entry_sources(hass))
         except Exception as err:  # noqa: BLE001
             return self.json({"error": str(err), "ac": []}, status_code=502)
         return self.json(data)

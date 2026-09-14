@@ -8,7 +8,17 @@ from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_ALERT_RADIUS, CONF_ALERT_RULES, CONF_NOTIFY, CONF_PANEL_SIZE, DOMAIN, PLATFORMS
+from .const import (
+    CONF_ALERT_RADIUS,
+    CONF_ALERT_RULES,
+    CONF_NOTIFY,
+    CONF_PANEL,
+    CONF_PANEL_SIZE,
+    CONF_QUICK_TYPES,
+    CONF_SOURCES,
+    DOMAIN,
+    PLATFORMS,
+)
 from .coordinator import AdsbCoordinator
 from .frontend import JSModuleRegistration
 from .view import AdsbAircraftView, AdsbPhotoView, AdsbTraceView
@@ -77,15 +87,22 @@ async def _async_register_services(hass: HomeAssistant) -> None:
                 opts[CONF_PANEL_SIZE] = max(1, min(5, int(call.data["panel_size"])))
             except (TypeError, ValueError):
                 pass
-        if "rules" in call.data:
-            rules = call.data["rules"]
-            if isinstance(rules, str):
+        for key, conf, expect in (
+            ("rules", CONF_ALERT_RULES, list),
+            ("panel", CONF_PANEL, dict),
+            ("sources", CONF_SOURCES, list),
+            ("quick_types", CONF_QUICK_TYPES, list),
+        ):
+            if key not in call.data:
+                continue
+            val = call.data[key]
+            if isinstance(val, str):
                 try:
-                    rules = loads(rules)
+                    val = loads(val)
                 except JSONDecodeError:
-                    rules = None
-            if isinstance(rules, list):
-                opts[CONF_ALERT_RULES] = rules
+                    continue
+            if isinstance(val, expect):
+                opts[conf] = val
         hass.config_entries.async_update_entry(entry, options=opts)
         coord = hass.data.get(DOMAIN, {}).get(entry.entry_id)
         if coord:

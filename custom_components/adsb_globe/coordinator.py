@@ -15,17 +15,23 @@ from .const import (
     CONF_ALERT_RULES,
     CONF_FEEDER_URL,
     CONF_NOTIFY,
+    CONF_PANEL,
     CONF_PANEL_SIZE,
+    CONF_QUICK_TYPES,
+    CONF_SOURCES,
     DEFAULT_ALERT_RADIUS,
     DEFAULT_ALERT_RULES,
+    DEFAULT_PANEL,
     DEFAULT_PANEL_SIZE,
+    DEFAULT_QUICK_TYPES,
     DEFAULT_SCAN_INTERVAL,
+    DEFAULT_SOURCES,
     DOMAIN,
     EVENT_ENTRY,
     EVENT_EXIT,
     MAX_SENSOR_AIRCRAFT,
 )
-from .feed import classify, format_alert, haversine_nm, home_fix, match_rule, pull_feeder, pull_public
+from .feed import classify, format_alert, haversine_nm, home_fix, match_rule, pull_feeder, pull_from_sources
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -76,7 +82,7 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 feed = await pull_feeder(self.hass, feeder)
             else:
                 max_r = max([radius] + [int(r.get("radius_nm") or radius) for r in rules] + [80])
-                feed = await pull_public(self.hass, lat, lon, max_r)
+                feed = await pull_from_sources(self.hass, lat, lon, max_r, opts.get(CONF_SOURCES))
         except Exception as err:
             raise UpdateFailed(str(err)) from err
 
@@ -118,6 +124,9 @@ class AdsbCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "lon": lon,
             "radius": radius,
             "panel_size": int(opts.get(CONF_PANEL_SIZE, DEFAULT_PANEL_SIZE)),
+            "panel": opts.get(CONF_PANEL) or DEFAULT_PANEL,
+            "sources": opts.get(CONF_SOURCES) or DEFAULT_SOURCES,
+            "quick_types": opts.get(CONF_QUICK_TYPES) or DEFAULT_QUICK_TYPES,
             "count": len(feed["ac"]),
             "airborne": airborne,
             "source": feed.get("source"),

@@ -1,4 +1,4 @@
-const CARD_VERSION = "1.4.0";
+const CARD_VERSION = "1.5.0";
 const POLL_MS = 1000;
 const MAX_DIST = 250;
 const MAX_TRAIL = 64;
@@ -750,13 +750,38 @@ const DEFAULT_RULES = [
   { id: "heli", enabled: true, match: "helicopter", value: "", radius_nm: 15, show_ring: true, notify: true, notify_service: "", tts: false, tts_media: "", title: "ADS-B {match}", message: "{callsign} ({type}) helicopter {dist} NM" },
 ];
 const RING_COLORS = ["#ffa726", "#29b6f6", "#66bb6a", "#ab47bc", "#ef5350", "#26c6da", "#ffee58"];
-const PANEL_STEPS = [
-  { w: 176, h: "30%", photo: 70 },
-  { w: 208, h: "38%", photo: 88 },
-  { w: 240, h: "48%", photo: 104 },
-  { w: 280, h: "64%", photo: 128 },
-  { w: 320, h: "82%", photo: 148 },
+const DEFAULT_SOURCES = [
+  { id: "adsblol", label: "adsb.lol", url: "https://api.adsb.lol/v2/lat/{lat}/lon/{lon}/dist/{dist}", enabled: true },
+  { id: "adsbfi", label: "opendata.adsb.fi", url: "https://opendata.adsb.fi/api/v3/lat/{lat}/lon/{lon}/dist/{dist}", enabled: true },
 ];
+const DEFAULT_QUICK = [
+  { id: "q_mil", label: "All military", match: "military", value: "", radius_nm: 15, title: "ADS-B military", message: "{callsign} ({type}) military {dist} NM" },
+  { id: "q_heli", label: "All helicopters", match: "helicopter", value: "", radius_nm: 15, title: "ADS-B helicopter", message: "{callsign} ({type}) helicopter {dist} NM" },
+  { id: "q_chinook", label: "Chinook", match: "chinook", value: "", radius_nm: 20, title: "ADS-B chinook", message: "{callsign} ({type}) Chinook {dist} NM" },
+  { id: "q_apache", label: "Apache", match: "apache", value: "", radius_nm: 20, title: "ADS-B apache", message: "{callsign} ({type}) Apache {dist} NM" },
+];
+const DEFAULT_PANEL = { w: 208, h: 38, left: 1.5, top: 1.5 };
+
+function shortLon(from, to) {
+  let t = Number(to);
+  const f = Number(from);
+  while (t - f > 180) t -= 360;
+  while (t - f < -180) t += 360;
+  return t;
+}
+
+function impliedKt(nm, dtMs) {
+  const hours = Math.max(Number(dtMs) || 0, 400) / 3600000;
+  return nm / hours;
+}
+
+function jumpTooFast(fromLat, fromLon, toLat, toLon, dtMs, gs) {
+  const nm = haversineNm(fromLat, fromLon, toLat, toLon);
+  const kt = impliedKt(nm, dtMs);
+  const reported = Number(gs);
+  const cap = Math.max(600, Number.isFinite(reported) && reported > 0 ? reported * 2.5 : 2310);
+  return kt > cap;
+}
 const MARKER_PATH = "/adsb_globe/tar1090-markers.json";
 const TYPE_ALIAS = {
   AH64: "H64", AH64A: "H64", AH64D: "H64", AH64E: "H64",
@@ -1025,7 +1050,7 @@ class AdsbGlobeCard extends HTMLElement {
     this._hydrateRules();
     this._loadMarkerPack();
     if (!this.shadowRoot) return;
-    this._hydratePanelSize();
+    if (!(this._settingsEl && this._settingsEl.classList.contains("open"))) this._applyPanelSize();
     if (!this._map) this._ensureMap();
   }
 
@@ -1138,7 +1163,7 @@ class AdsbGlobeCard extends HTMLElement {
 
       .settings {
         display: none; position: absolute; right: 54px; top: 10px; z-index: 1400;
-        width: min(320px, calc(100% - 70px)); max-height: calc(100% - 24px); overflow: auto;
+        width: min(340px, calc(100% - 70px)); max-height: calc(100% - 24px); overflow: auto;
         background: rgba(12,16,22,.96); color: #e8eef4;
         border: 1px solid rgba(255,255,255,.08); border-radius: 10px; padding: 12px; font-size: 13px;
         box-shadow: 0 8px 24px rgba(0,0,0,.45);
@@ -1149,12 +1174,12 @@ class AdsbGlobeCard extends HTMLElement {
       .settings input[type=range] { width: 120px; }
       .settings .hint { color: #90a4ae; font-size: 11px; }
       .settings .sec { margin: 12px 0 4px; font-size: 10px; letter-spacing: .08em; color: #90a4ae; text-transform: uppercase; }
-      .stepper { display: flex; align-items: center; gap: 6px; }
-      .stepper button {
-        width: 28px; height: 28px; border: 0; border-radius: 6px; cursor: pointer;
-        background: rgba(255,255,255,.1); color: #e8eef4; font-size: 16px;
+      .settings select, .settings input[type=text], .settings input[type=number] {
+        background: #0d1117; color: #e8eef4; border: 1px solid rgba(255,255,255,.12);
+        border-radius: 6px; padding: 4px 6px; font: 12px ui-sans-serif, system-ui; width: 100%;
+        margin: 4px 0; box-sizing: border-box;
       }
-      .stepper .ps-val { min-width: 1.2em; text-align: center; font-weight: 700; }
+      .src-row .rm, .q-row .rm { background: none; border: 0; color: #ef9a9a; cursor: pointer; font-size: 16px; }
 
       .ac-marker { display: flex; align-items: center; justify-content: center; transform-origin: center; }
       .ac-label {
@@ -1174,8 +1199,25 @@ class AdsbGlobeCard extends HTMLElement {
       .hover .hex { color: #b0bec5; margin-bottom: 8px; }
       .hover .row { display: flex; justify-content: space-between; gap: 16px; }
       .hover .k { color: #90a4ae; }
+      .pair { display: flex; gap: 6px; margin: 6px 0; align-items: center; }
+      .pair select, .pair input { flex: 1; min-width: 0; }
+      .src-row, .q-row {
+        display: flex; align-items: center; gap: 6px; margin: 5px 0;
+        font-size: 12px;
+      }
+      .src-row span, .q-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .src-add, .q-add { width: 100%; margin-top: 6px; }
+      .fine label span.num { font-variant-numeric: tabular-nums; color: #90caf9; min-width: 3.2em; text-align: right; }
+      .fine input[type=range] { width: 140px; }
+      .corners { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
+      .corners button {
+        border: 0; border-radius: 6px; background: rgba(255,255,255,.08); color: #e8eef4;
+        font: 650 11px ui-sans-serif, system-ui; padding: 4px 8px; cursor: pointer;
+      }
+
       .panel {
-        display: none; position: absolute; left: 10px; top: 10px; z-index: 1500;
+        display: none; position: absolute; left: var(--panel-left, 1.5%); top: var(--panel-top, 1.5%); z-index: 1500;
+        right: auto; bottom: auto;
         width: min(var(--panel-w, 208px), calc(100% - 70px)); max-height: var(--panel-h, 38%); overflow: auto;
         background: rgba(16,20,24,.94); color: #e8eef4; border-radius: 10px;
         box-shadow: 0 12px 32px rgba(0,0,0,.5);
@@ -1207,7 +1249,7 @@ class AdsbGlobeCard extends HTMLElement {
         border-radius: 6px; padding: 4px 6px; font: 12px ui-sans-serif, system-ui; width: 100%;
       }
       .rule .rm { background: none; border: 0; color: #ef9a9a; cursor: pointer; font-size: 16px; }
-      .add-rule, .chips button {
+      .add-rule, .add-alert, .q-add, .src-add, .chips button {
         border: 0; border-radius: 6px; background: #29b6f6; color: #08202c;
         font: 650 12px ui-sans-serif, system-ui; padding: 6px 10px; cursor: pointer;
       }
@@ -1250,25 +1292,46 @@ class AdsbGlobeCard extends HTMLElement {
           <div class="panel"></div>
           <div class="settings">
             <h3>Settings</h3>
-            <div class="sec">Display</div>
-            <label>Details panel
-              <span class="stepper">
-                <button type="button" class="ps-minus" title="Smaller">−</button>
-                <span class="ps-val">2</span>
-                <button type="button" class="ps-plus" title="Larger">+</button>
-              </span>
-            </label>
-            <div class="hint">1 compact · 5 fills the card</div>
+            <div class="sec">Details box</div>
+            <div class="fine">
+              <label>Width <span class="num pw-val">208px</span> <input type="range" class="pw" min="160" max="420" step="2" value="208"></label>
+              <label>Height <span class="num ph-val">38%</span> <input type="range" class="ph" min="16" max="90" step="1" value="38"></label>
+              <label>From left <span class="num pl-val">1.5%</span> <input type="range" class="pl" min="0" max="72" step="0.5" value="1.5"></label>
+              <label>From top <span class="num pt-val">1.5%</span> <input type="range" class="pt" min="0" max="72" step="0.5" value="1.5"></label>
+            </div>
+            <div class="corners">
+              <button type="button" data-corner="tl">Top left</button>
+              <button type="button" data-corner="tr">Top right</button>
+              <button type="button" data-corner="bl">Bottom left</button>
+              <button type="button" data-corner="br">Bottom right</button>
+            </div>
+            <div class="sec">Data sources</div>
+            <div class="hint">Enable networks or paste a tar1090 aircraft.json URL.</div>
+            <div class="sources"></div>
+            <div class="pair">
+              <input type="text" class="src-url" placeholder="https://host/tar1090/data/aircraft.json">
+            </div>
+            <button type="button" class="src-add add-rule">+ Add source</button>
+            <div class="sec">Quick select</div>
+            <div class="hint">Chips used to add a watch. Fill every field, then add.</div>
+            <div class="quick-list"></div>
+            <input type="text" class="q-label" placeholder="Label · e.g. 737 MAX">
+            <select class="q-match"></select>
+            <input type="text" class="q-value" placeholder="Type/reg if needed · B38M">
+            <label>Radius <span class="num q-rad-val">15</span> NM <input type="range" class="q-rad" min="5" max="80" step="1" value="15"></label>
+            <input type="text" class="q-title" placeholder="Title · ADS-B {match}">
+            <input type="text" class="q-msg" placeholder="Message · {callsign} ({type}) {dist} NM">
+            <button type="button" class="q-add">+ Add to quick list</button>
             <div class="sec">Alerts</div>
             <label>Master notifications
               <input type="checkbox" class="notify" checked>
             </label>
             <div class="hint">Each rule has its own radius, ring, text and actions.</div>
-            <div class="sec">Nearby military & helicopters</div>
+            <div class="sec">Quick chips</div>
             <div class="chips"></div>
             <div class="sec">Rules</div>
             <div class="rules"></div>
-            <button type="button" class="add-rule">+ Add alert</button>
+            <button type="button" class="add-alert">+ Add alert</button>
             <div class="hint" style="margin-top:8px">{callsign} {type} {reg} {hex} {dist} {match} {alt} {desc} {operator} {gs} {squawk}</div>
           </div>
         </div>
@@ -1288,13 +1351,19 @@ class AdsbGlobeCard extends HTMLElement {
     this._lastAc = [];
     this._interp = new Map();
     this._rules = (this._config.alert && this._config.alert.rules) || DEFAULT_RULES.map((r) => ({ ...r }));
+    this._sources = DEFAULT_SOURCES.map((r) => ({ ...r }));
+    this._quick = DEFAULT_QUICK.map((r) => ({ ...r }));
+    this._panel = { ...DEFAULT_PANEL };
     this._bindChrome();
     this._renderLayers();
     this._syncRail();
     this._hydrateRules();
     this._hydratePanelSize();
     this._loadMarkerPack();
+    this._renderSources();
+    this._renderQuick();
     this._renderRules();
+    this._renderChips();
   }
 
   _bindChrome() {
@@ -1366,71 +1435,151 @@ class AdsbGlobeCard extends HTMLElement {
     const st = this._entityState();
     if (!st) return;
     this._rulesHydrated = true;
-    const rules = st.attributes && st.attributes.alert_rules;
+    const a = st.attributes || {};
+    const rules = a.alert_rules;
     if (Array.isArray(rules) && rules.length) {
       this._rules = rules.map((r) => ({ ...r }));
       if (this._map) this._drawRings();
-      if (this._$(".rules")) this._renderRules();
     }
+    if (Array.isArray(a.sources) && a.sources.length) {
+      this._sources = a.sources.map((r) => ({ ...r }));
+    }
+    if (Array.isArray(a.quick_types) && a.quick_types.length) {
+      this._quick = a.quick_types.map((r) => ({ ...r }));
+    }
+    if (a.panel && typeof a.panel === "object") {
+      this._panel = { ...DEFAULT_PANEL, ...a.panel };
+    } else {
+      try {
+        const ls = JSON.parse(window.localStorage && localStorage.getItem("adsb_globe_panel") || "null");
+        if (ls && typeof ls === "object") this._panel = { ...DEFAULT_PANEL, ...ls };
+      } catch (err) { /* ignore */ }
+    }
+    if (this._$(".rules")) this._renderRules();
+    if (this._$(".sources")) this._renderSources();
+    if (this._$(".quick-list")) this._renderQuick();
+    if (this._$(".chips")) this._renderChips();
+    this._applyPanelSize();
   }
 
   _bindSettings() {
     const panel = this._settingsEl;
     if (!panel) return;
     const notify = panel.querySelector(".notify");
-    notify.addEventListener("change", () => this._saveRules());
-    panel.querySelector(".add-rule").addEventListener("click", () => {
-      this._addRule({ match: "type", value: "", radius_nm: 20, message: "{callsign} ({type}/{reg}) {dist} NM" });
+    notify.addEventListener("change", () => this._savePrefs());
+    const addAlert = panel.querySelector(".add-alert");
+    if (addAlert) {
+      addAlert.addEventListener("click", () => {
+        this._addRule({ match: "type", value: "", radius_nm: 20, message: "{callsign} ({type}/{reg}) {dist} NM" });
+      });
+    }
+    ["pw", "ph", "pl", "pt"].forEach((cls) => {
+      const el = panel.querySelector("." + cls);
+      if (!el) return;
+      el.addEventListener("input", () => this._readPanelSliders());
+      el.addEventListener("change", () => { this._readPanelSliders(); this._savePrefs(); });
     });
-    const minus = panel.querySelector(".ps-minus");
-    const plus = panel.querySelector(".ps-plus");
-    if (minus) minus.addEventListener("click", () => this._nudgePanel(-1));
-    if (plus) plus.addEventListener("click", () => this._nudgePanel(1));
+    const corners = panel.querySelector(".corners");
+    if (corners) {
+      corners.addEventListener("click", (ev) => {
+        const b = ev.target.closest("button");
+        if (!b || !b.dataset.corner) return;
+        this._placePanel(b.dataset.corner);
+      });
+    }
+    const srcAdd = panel.querySelector(".src-add");
+    const srcUrl = panel.querySelector(".src-url");
+    if (srcAdd) srcAdd.addEventListener("click", () => this._addSource());
+    if (srcUrl) {
+      srcUrl.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter") { ev.preventDefault(); this._addSource(); }
+      });
+    }
+    const qMatch = panel.querySelector(".q-match");
+    if (qMatch && !qMatch.options.length) {
+      RULE_MATCHES.forEach(([id, label]) => {
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = label;
+        qMatch.appendChild(o);
+      });
+    }
+    const qRad = panel.querySelector(".q-rad");
+    if (qRad) {
+      qRad.addEventListener("input", () => {
+        const n = panel.querySelector(".q-rad-val");
+        if (n) n.textContent = String(qRad.value);
+      });
+    }
+    const qAdd = panel.querySelector(".q-add");
+    if (qAdd) qAdd.addEventListener("click", () => this._addQuick());
   }
 
-  _nudgePanel(delta) {
-    this._panelSizeHydrated = true;
-    this._panelSize = Math.max(1, Math.min(5, (Number(this._panelSize) || 2) + delta));
+  _readPanelSliders() {
+    const num = (sel, fallback) => {
+      const n = this._$(sel);
+      const v = n ? Number(n.value) : fallback;
+      return Number.isFinite(v) ? v : fallback;
+    };
+    this._panel = {
+      w: num(".pw", 208),
+      h: num(".ph", 38),
+      left: num(".pl", 1.5),
+      top: num(".pt", 1.5),
+    };
     this._applyPanelSize();
-    this._savePanelSize();
+  }
+
+  _placePanel(corner) {
+    const wrap = this._$(".wrap");
+    const ww = wrap ? wrap.clientWidth : 800;
+    const hh = wrap ? wrap.clientHeight : 600;
+    const p = this._panel || { ...DEFAULT_PANEL };
+    const leftR = Math.max(0, Math.min(72, Number((((ww - p.w - 14) / ww) * 100).toFixed(1))));
+    const topB = Math.max(0, Math.min(72, Number((((hh * (1 - p.h / 100) - 14) / hh) * 100).toFixed(1))));
+    if (corner === "tl") { p.left = 1.5; p.top = 1.5; }
+    if (corner === "tr") { p.left = leftR; p.top = 1.5; }
+    if (corner === "bl") { p.left = 1.5; p.top = topB; }
+    if (corner === "br") { p.left = leftR; p.top = topB; }
+    this._panel = p;
+    this._applyPanelSize();
+    this._savePrefs();
   }
 
   _hydratePanelSize() {
-    if (this._panelSizeHydrated) {
-      this._applyPanelSize();
-      return;
-    }
-    let n = Number(this._config && this._config.panel_size);
-    const st = this._entityState();
-    if (st && st.attributes && st.attributes.panel_size) n = Number(st.attributes.panel_size);
-    try {
-      const ls = Number(window.localStorage && localStorage.getItem("adsb_globe_panel_size"));
-      if (!n && ls) n = ls;
-    } catch (err) { /* ignore */ }
-    this._panelSize = Math.max(1, Math.min(5, n || 2));
-    this._panelSizeHydrated = true;
     this._applyPanelSize();
   }
 
   _applyPanelSize() {
-    const step = Math.max(1, Math.min(5, Number(this._panelSize) || 2));
-    this._panelSize = step;
-    const spec = PANEL_STEPS[step - 1];
+    const raw = this._panel || { ...DEFAULT_PANEL };
+    this._panel = {
+      w: Math.max(160, Math.min(420, Number(raw.w) || 208)),
+      h: Math.max(16, Math.min(90, Number(raw.h) || 38)),
+      left: Math.max(0, Math.min(72, Number(raw.left) ?? 1.5)),
+      top: Math.max(0, Math.min(72, Number(raw.top) ?? 1.5)),
+    };
     const panel = this._$(".panel");
     if (panel) {
-      panel.style.setProperty("--panel-w", spec.w + "px");
-      panel.style.setProperty("--panel-h", spec.h);
-      panel.style.setProperty("--panel-photo", spec.photo + "px");
+      panel.style.setProperty("--panel-w", this._panel.w + "px");
+      panel.style.setProperty("--panel-h", this._panel.h + "%");
+      panel.style.setProperty("--panel-photo", Math.round(40 + this._panel.h * 1.4) + "px");
+      panel.style.setProperty("--panel-left", this._panel.left + "%");
+      panel.style.setProperty("--panel-top", this._panel.top + "%");
     }
-    const val = this._$(".ps-val");
-    if (val) val.textContent = String(step);
+    const setTxt = (sel, t) => { const n = this._$(sel); if (n) n.textContent = t; };
+    const setVal = (sel, v) => { const n = this._$(sel); if (n) n.value = v; };
+    setTxt(".pw-val", this._panel.w + "px");
+    setTxt(".ph-val", this._panel.h + "%");
+    setTxt(".pl-val", Number(this._panel.left).toFixed(1) + "%");
+    setTxt(".pt-val", Number(this._panel.top).toFixed(1) + "%");
+    setVal(".pw", this._panel.w);
+    setVal(".ph", this._panel.h);
+    setVal(".pl", this._panel.left);
+    setVal(".pt", this._panel.top);
   }
 
   _savePanelSize() {
-    try { localStorage.setItem("adsb_globe_panel_size", String(this._panelSize)); } catch (err) { /* ignore */ }
-    if (this._hass && this._hass.callService) {
-      this._hass.callService("adsb_globe", "set_options", { panel_size: this._panelSize });
-    }
+    this._savePrefs();
   }
 
   _loadMarkerPack() {
@@ -1446,8 +1595,157 @@ class AdsbGlobeCard extends HTMLElement {
     if (!panel) return;
     panel.querySelector(".notify").checked = this._notifyOn();
     this._applyPanelSize();
+    this._renderSources();
+    this._renderQuick();
     this._renderRules();
     this._renderChips();
+  }
+
+  _notifyServices() {
+    const out = [];
+    const svcs = (this._hass && this._hass.services && this._hass.services.notify) || {};
+    Object.keys(svcs).forEach((name) => {
+      if (name === "persistent_notification") return;
+      out.push({ id: "notify." + name, label: name.replace(/_/g, " ") });
+    });
+    out.sort((a, b) => a.label.localeCompare(b.label));
+    return out;
+  }
+
+  _mediaPlayers() {
+    const out = [];
+    const states = (this._hass && this._hass.states) || {};
+    Object.keys(states).forEach((id) => {
+      if (!id.startsWith("media_player.")) return;
+      const st = states[id];
+      const label = (st.attributes && st.attributes.friendly_name) || id.replace("media_player.", "");
+      out.push({ id, label });
+    });
+    out.sort((a, b) => a.label.localeCompare(b.label));
+    return out;
+  }
+
+  _comboHtml(items, current, emptyLabel, selClass, inputClass, placeholder) {
+    const known = items.some((o) => o.id === current);
+    const custom = !!(current && !known);
+    const opts = [
+      `<option value="">${esc(emptyLabel)}</option>`,
+      ...items.map((o) => `<option value="${esc(o.id)}"${o.id === current ? " selected" : ""}>${esc(o.label)}</option>`),
+      `<option value="__custom__"${custom ? " selected" : ""}>Custom…</option>`,
+    ].join("");
+    return `<div class="pair"><select class="${selClass}">${opts}</select></div>
+      <input type="text" class="${inputClass}" placeholder="${esc(placeholder)}" style="${custom ? "" : "display:none"}">`;
+  }
+
+  _comboValue(root, selClass, inputClass) {
+    const sel = root.querySelector("." + selClass);
+    const inp = root.querySelector("." + inputClass);
+    if (!sel) return (inp && inp.value) || "";
+    if (sel.value === "__custom__") return ((inp && inp.value) || "").trim();
+    return sel.value;
+  }
+
+  _bindCombo(root, selClass, inputClass, onChange) {
+    const sel = root.querySelector("." + selClass);
+    const inp = root.querySelector("." + inputClass);
+    if (!sel || !inp) return;
+    const syncVis = () => {
+      inp.style.display = sel.value === "__custom__" ? "" : "none";
+    };
+    sel.addEventListener("change", () => { syncVis(); onChange(); });
+    inp.addEventListener("change", onChange);
+    inp.addEventListener("input", onChange);
+  }
+
+  _addSource() {
+    const inp = this._$(".src-url");
+    const raw = ((inp && inp.value) || "").trim();
+    if (!/^https?:\/\//i.test(raw)) return;
+    if ((this._sources || []).some((s) => s.url === raw)) {
+      if (inp) inp.value = "";
+      return;
+    }
+    let label = raw;
+    try { label = new URL(raw).host; } catch (err) { /* keep */ }
+    this._sources.push({
+      id: "s" + Math.random().toString(36).slice(2, 8),
+      label,
+      url: raw,
+      enabled: true,
+    });
+    if (inp) inp.value = "";
+    this._renderSources();
+    this._savePrefs();
+  }
+
+  _renderSources() {
+    const el = this._$(".sources");
+    if (!el) return;
+    el.innerHTML = "";
+    (this._sources || []).forEach((src, i) => {
+      const row = document.createElement("div");
+      row.className = "src-row";
+      row.innerHTML = `<input type="checkbox" class="on"> <span title="${esc(src.url)}">${esc(src.label || src.url)}</span> <button type="button" class="rm" title="Remove">×</button>`;
+      row.querySelector(".on").checked = src.enabled !== false;
+      row.querySelector(".on").addEventListener("change", () => {
+        src.enabled = row.querySelector(".on").checked;
+        this._savePrefs();
+      });
+      row.querySelector(".rm").addEventListener("click", () => {
+        this._sources.splice(i, 1);
+        this._renderSources();
+        this._savePrefs();
+      });
+      el.appendChild(row);
+    });
+  }
+
+  _addQuick() {
+    const label = ((this._$(".q-label") && this._$(".q-label").value) || "").trim();
+    const match = (this._$(".q-match") && this._$(".q-match").value) || "type";
+    const value = ((this._$(".q-value") && this._$(".q-value").value) || "").trim();
+    const radius = Number((this._$(".q-rad") && this._$(".q-rad").value) || 15);
+    const title = ((this._$(".q-title") && this._$(".q-title").value) || "").trim() || ("ADS-B " + label);
+    const message = ((this._$(".q-msg") && this._$(".q-msg").value) || "").trim() || `{callsign} ({type}) ${label || match} {dist} NM`;
+    if (!label) return;
+    if ((match === "type" || match === "reg") && !value) return;
+    if ((this._quick || []).some((q) => q.label === label && q.match === match && normId(q.value) === normId(value))) return;
+    this._quick.push({
+      id: "q" + Math.random().toString(36).slice(2, 8),
+      label,
+      match,
+      value,
+      radius_nm: Math.max(5, Math.min(80, radius || 15)),
+      title,
+      message,
+    });
+    const clear = (sel) => { const n = this._$(sel); if (n) n.value = ""; };
+    clear(".q-label");
+    clear(".q-value");
+    clear(".q-title");
+    clear(".q-msg");
+    this._renderQuick();
+    this._renderChips();
+    this._savePrefs();
+  }
+
+  _renderQuick() {
+    const el = this._$(".quick-list");
+    if (!el) return;
+    el.innerHTML = "";
+    (this._quick || []).forEach((q, i) => {
+      const row = document.createElement("div");
+      row.className = "q-row";
+      const extra = q.value ? ` · ${q.value}` : "";
+      row.innerHTML = `<span title="${esc(q.match + extra)}">${esc(q.label)}${q.radius_nm ? " · " + q.radius_nm + " NM" : ""}</span> <button type="button" class="rm" title="Remove">×</button>`;
+      row.querySelector(".rm").addEventListener("click", () => {
+        this._quick.splice(i, 1);
+        this._renderQuick();
+        this._renderChips();
+        this._savePrefs();
+      });
+      el.appendChild(row);
+    });
   }
 
   _hasRule(match, value) {
@@ -1485,48 +1783,53 @@ class AdsbGlobeCard extends HTMLElement {
     const el = this._$(".chips");
     if (!el) return;
     el.innerHTML = "";
-    const seen = new Set();
-    const nearby = [];
+    const addChip = (label, match, value, spec) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      if (this._hasRule(match, value)) b.classList.add("on");
+      const isObj = spec && typeof spec === "object";
+      b.title = isObj ? (spec.label || "Watch") : (spec || "Watch this type");
+      b.addEventListener("click", () => {
+        this._addRule({
+          match,
+          value: value || "",
+          radius_nm: isObj && spec.radius_nm ? spec.radius_nm : 20,
+          title: isObj ? spec.title : undefined,
+          message: isObj && spec.message ? spec.message : "{callsign} ({type}/{reg}) {dist} NM",
+        });
+        this._renderChips();
+      });
+      el.appendChild(b);
+    };
+    (this._quick || []).forEach((q) => {
+      addChip(q.label, q.match, q.value, q);
+    });
+    const seen = new Set((this._quick || []).map((q) => (q.value || q.label || "").toUpperCase()));
     (this._lastAc || []).forEach((ac) => {
       const kinds = classify(ac);
       if (!(kinds.includes("military") || kinds.includes("helicopter"))) return;
       const key = (ac.t || ac.r || ac.hex).toUpperCase();
       if (seen.has(key)) return;
       seen.add(key);
-      nearby.push(ac);
-    });
-    if (!nearby.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = "None in view — add a type or registration below.";
-      el.appendChild(empty);
-      return;
-    }
-    nearby.forEach((ac) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = [ac.t, ac.r].filter(Boolean).join(" · ") || ac.hex;
       const match = ac.t ? "type" : "reg";
       const value = ac.t || ac.r;
-      if (this._hasRule(match, value)) b.classList.add("on");
-      b.title = ac.desc ? `${ac.desc}${ac.r ? " · " + ac.r : ""}` : "Watch this type";
-      b.addEventListener("click", () => {
-        this._addRule({
-          match,
-          value,
-          radius_nm: 20,
-          message: "{callsign} ({type}/{reg}) {dist} NM",
-        });
-        this._renderChips();
-      });
-      el.appendChild(b);
+      addChip([ac.t, ac.r].filter(Boolean).join(" · ") || ac.hex, match, value, ac.desc ? `${ac.desc}${ac.r ? " · " + ac.r : ""}` : "Watch this type");
     });
+    if (!el.childNodes.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "None yet — add a type above.";
+      el.appendChild(empty);
+    }
   }
 
   _renderRules() {
     const box = this._$(".rules");
     if (!box) return;
     box.innerHTML = "";
+    const notifyItems = this._notifyServices();
+    const mediaItems = this._mediaPlayers();
     this._rules.forEach((rule, idx) => {
       const div = document.createElement("div");
       div.className = "rule";
@@ -1545,9 +1848,11 @@ class AdsbGlobeCard extends HTMLElement {
         <input type="text" class="title" placeholder="Title · ADS-B {match}">
         <input type="text" class="msg" placeholder="Message · {callsign} ({type}) {dist} NM">
         <label>HA notification <input type="checkbox" class="note" ${rule.notify !== false ? "checked" : ""}></label>
-        <input type="text" class="svc" placeholder="Device · notify.mobile_app_…">
+        ${this._comboHtml(notifyItems, rule.notify_service || "", "HA notification only", "svc-sel", "svc", "notify.mobile_app_…")}
         <label>Speak <input type="checkbox" class="tts" ${rule.tts ? "checked" : ""}></label>
-        <input type="text" class="ttsmedia" placeholder="media_player.xxx" style="${rule.tts ? "" : "display:none"}">
+        <div class="tts-box" style="${rule.tts ? "" : "display:none"}">
+          ${this._comboHtml(mediaItems, rule.tts_media || "", "Select speaker", "tts-sel", "ttsmedia", "media_player.xxx")}
+        </div>
       `;
       div.querySelector(".val").value = rule.value || "";
       div.querySelector(".title").value = rule.title || "ADS-B {match}";
@@ -1563,39 +1868,53 @@ class AdsbGlobeCard extends HTMLElement {
         rule.notify = div.querySelector(".note").checked;
         rule.title = div.querySelector(".title").value;
         rule.message = div.querySelector(".msg").value;
-        rule.notify_service = div.querySelector(".svc").value;
+        rule.notify_service = this._comboValue(div, "svc-sel", "svc");
         rule.tts = div.querySelector(".tts").checked;
-        rule.tts_media = div.querySelector(".ttsmedia").value;
+        rule.tts_media = this._comboValue(div, "tts-sel", "ttsmedia");
         div.querySelector(".rval").textContent = String(rule.radius_nm);
         const show = rule.match === "type" || rule.match === "reg";
         div.querySelector(".val").style.display = show ? "" : "none";
         div.querySelector(".val").placeholder = rule.match === "reg" ? "G-XXXX / EI-IHK" : "B38M / 737 MAX 8 / PC-24";
-        div.querySelector(".ttsmedia").style.display = rule.tts ? "" : "none";
+        div.querySelector(".tts-box").style.display = rule.tts ? "" : "none";
         this._drawRings();
       };
       div.querySelectorAll("input, select").forEach((n) => {
         n.addEventListener("input", sync);
-        n.addEventListener("change", () => { sync(); this._saveRules(); });
+        n.addEventListener("change", () => { sync(); this._savePrefs(); });
       });
+      this._bindCombo(div, "svc-sel", "svc", () => { sync(); this._savePrefs(); });
+      this._bindCombo(div, "tts-sel", "ttsmedia", () => { sync(); this._savePrefs(); });
       div.querySelector(".rm").addEventListener("click", () => {
         this._rules.splice(idx, 1);
         this._renderRules();
-        this._saveRules();
+        this._savePrefs();
       });
       box.appendChild(div);
     });
   }
 
   _saveRules() {
+    this._savePrefs();
+  }
+
+  _savePrefs() {
     this._rulesHydrated = true;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => this._flushPrefs(), 350);
+  }
+
+  _flushPrefs() {
     const notify = !!(this._$(".notify") && this._$(".notify").checked);
     this._config.alert = { ...(this._config.alert || {}), enabled: notify, rules: this._rules };
     this._drawRings();
+    try { localStorage.setItem("adsb_globe_panel", JSON.stringify(this._panel || DEFAULT_PANEL)); } catch (err) { /* ignore */ }
     if (this._hass && this._hass.callService) {
       this._hass.callService("adsb_globe", "set_options", {
         notify,
-        panel_size: this._panelSize || 2,
-        rules: JSON.stringify(this._rules),
+        rules: JSON.stringify(this._rules || []),
+        panel: JSON.stringify(this._panel || DEFAULT_PANEL),
+        sources: JSON.stringify(this._sources || []),
+        quick_types: JSON.stringify(this._quick || []),
       });
     }
   }
@@ -1642,7 +1961,11 @@ class AdsbGlobeCard extends HTMLElement {
     this._drawRings();
     this._map.on("moveend", () => { this._updateScale(); this._fetch(); });
     this._map.on("zoomend", () => this._updateScale());
-    this._map.on("click", () => { this._hideHover(); this._closeSelected(); });
+    this._map.on("click", () => {
+      this._hideHover();
+      this._closeSelected();
+      if (this._settingsEl) this._settingsEl.classList.remove("open");
+    });
     const wrap = this._$(".wrap");
     this._ro = new ResizeObserver(() => { if (this._map) this._map.invalidateSize(); });
     if (wrap) this._ro.observe(wrap);
@@ -1743,8 +2066,8 @@ class AdsbGlobeCard extends HTMLElement {
   }
 
   async _fetch() {
-    if (this._gone || this._paused || this._busy || !this._map) return;
-    this._busy = true;
+    if (this._gone || this._paused || !this._map) return;
+    const seq = (this._fetchSeq = (this._fetchSeq || 0) + 1);
     const c = this._map.getCenter();
     const dist = this._viewDist();
     let data = null;
@@ -1752,28 +2075,22 @@ class AdsbGlobeCard extends HTMLElement {
       if (this._hass && this._hass.callApi) {
         data = await Promise.race([
           this._hass.callApi("GET", `adsb_globe/aircraft?lat=${c.lat.toFixed(4)}&lon=${c.lng.toFixed(4)}&dist=${dist}`),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 3500)),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000)),
         ]);
       }
     } catch (err) {
       data = null;
     }
+    if (seq !== this._fetchSeq) return;
     if (!data || !Array.isArray(data.ac || data.aircraft)) {
-      const st = this._entityState();
-      if (st && Array.isArray(st.attributes.aircraft)) {
-        data = { ac: st.attributes.aircraft, source: "ha" };
-      }
+      if (this._meta && !(this._lastAc && this._lastAc.length)) this._meta.textContent = "feed error";
+      if (this._dot && !(this._lastAc && this._lastAc.length)) this._dot.classList.add("off");
+      return;
     }
-    if (data && (data.ac || data.aircraft)) {
-      const ac = (data.ac || data.aircraft).map(slim).filter(Boolean);
-      this._lastAc = ac;
-      this._lastSource = data.source || "live";
-      this._paint({ ac, source: this._lastSource });
-    } else if (this._meta) {
-      this._meta.textContent = "feed error";
-      if (this._dot) this._dot.classList.add("off");
-    }
-    this._busy = false;
+    const ac = (data.ac || data.aircraft).map(slim).filter(Boolean);
+    this._lastAc = ac;
+    this._lastSource = data.source || "live";
+    this._paint({ ac, source: this._lastSource });
   }
 
   _iconHtml(ac, sel) {
@@ -1802,6 +2119,10 @@ class AdsbGlobeCard extends HTMLElement {
       const { size, html } = this._iconHtml(ac, sel);
       mk.setIcon(L.divIcon({ className: "ac-icon", html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }));
     });
+  }
+
+  _liveAc(hex, fallback) {
+    return (this._lastAc || []).find((a) => a.hex === hex) || fallback;
   }
 
   _interpolate() {
@@ -1836,9 +2157,17 @@ class AdsbGlobeCard extends HTMLElement {
       const existing = this._markers.get(ac.hex);
       if (existing) {
         const cur = existing.getLatLng();
-        this._interp.set(ac.hex, {
-          sLat: cur.lat, sLon: cur.lng, tLat: ac.lat, tLon: ac.lon, t0: now,
-        });
+        const tLon = shortLon(cur.lng, ac.lon);
+        const prev = this._interp.get(ac.hex);
+        const dt = prev ? Math.max(400, now - prev.t0) : POLL_MS;
+        if (jumpTooFast(cur.lat, cur.lng, ac.lat, tLon, dt, ac.gs)) {
+          existing.setLatLng([ac.lat, ac.lon]);
+          this._interp.set(ac.hex, { sLat: ac.lat, sLon: ac.lon, tLat: ac.lat, tLon: ac.lon, t0: now });
+        } else {
+          this._interp.set(ac.hex, {
+            sLat: cur.lat, sLon: cur.lng, tLat: ac.lat, tLon, t0: now,
+          });
+        }
         const el = existing.getElement();
         const mk = el && el.querySelector(".ac-marker");
         if (mk) {
@@ -1854,21 +2183,26 @@ class AdsbGlobeCard extends HTMLElement {
           icon: L.divIcon({ className: "ac-icon", html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] }),
           riseOnHover: true,
         }).addTo(this._map);
+        const hex = ac.hex;
         marker.on("click", (ev) => {
           L.DomEvent.stopPropagation(ev);
-          this._openSelected(ac);
+          this._openSelected(this._liveAc(hex, ac));
         });
-        marker.on("mouseover", (ev) => this._showHover(ac, ev));
+        marker.on("mouseover", (ev) => this._showHover(this._liveAc(hex, ac), ev));
         marker.on("mouseout", () => this._hideHover());
         this._markers.set(ac.hex, marker);
         this._interp.set(ac.hex, { sLat: ac.lat, sLon: ac.lon, tLat: ac.lat, tLon: ac.lon, t0: now });
       }
       const trail = this._trails[ac.hex] || [];
       const last = trail[trail.length - 1];
-      if (!last || haversineNm(last[0], last[1], ac.lat, ac.lon) > 0.03) {
-        trail.push([ac.lat, ac.lon]);
-        if (trail.length > 2500) trail.splice(0, trail.length - 2500);
-        this._trails[ac.hex] = trail;
+      const hop = last ? haversineNm(last[0], last[1], ac.lat, ac.lon) : 0;
+      if (!last || hop > 0.03) {
+        if (last && hop > 12) this._trails[ac.hex] = [[ac.lat, ac.lon]];
+        else {
+          trail.push([ac.lat, ac.lon]);
+          if (trail.length > 2500) trail.splice(0, trail.length - 2500);
+          this._trails[ac.hex] = trail;
+        }
       }
     });
     for (const [hex, mk] of this._markers) {
@@ -1893,6 +2227,7 @@ class AdsbGlobeCard extends HTMLElement {
         else this._fillPanel(ac);
       } else this._closeSelected();
     }
+    if (this._settingsEl && this._settingsEl.classList.contains("open")) this._renderChips();
   }
 
   _row(label, value, key) {

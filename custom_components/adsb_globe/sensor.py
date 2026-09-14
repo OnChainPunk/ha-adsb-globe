@@ -6,7 +6,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import CONF_NOTIFY, CONF_PANEL_SIZE, DEFAULT_PANEL_SIZE, DOMAIN
+from .const import CONF_NOTIFY, CONF_PANEL, CONF_PANEL_SIZE, CONF_QUICK_TYPES, CONF_SOURCES, DEFAULT_PANEL_SIZE, DOMAIN
 from .coordinator import AdsbCoordinator
 
 
@@ -47,6 +47,9 @@ class AdsbInAreaSensor(CoordinatorEntity[AdsbCoordinator], SensorEntity):
             "radius_nm": data.get("radius"),
             "notify": opts.get(CONF_NOTIFY, True),
             "panel_size": opts.get(CONF_PANEL_SIZE, data.get("panel_size", DEFAULT_PANEL_SIZE)),
+            "panel": opts.get(CONF_PANEL) or data.get("panel"),
+            "sources": opts.get(CONF_SOURCES) or data.get("sources") or [],
+            "quick_types": opts.get(CONF_QUICK_TYPES) or data.get("quick_types") or [],
             "source": data.get("source"),
             "alert_rules": data.get("rules") or [],
             "aircraft": data.get("ac") or [],
